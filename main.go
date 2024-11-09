@@ -51,7 +51,7 @@ func (t *TorrentFile) InfoHash() ([20]byte, error) {
 	return sha1.Sum(t.InfoBytes), nil
 }
 func main() {
-	tf, err := parseTorrentFile("../examples/torrent_test.txt.torrent")
+	tf, err := parseTorrentFile("../examples/test.txt.torrent")
 	if err != nil {
 		fmt.Printf("Error parsing torrent: %v\n", err)
 		return
