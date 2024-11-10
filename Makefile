@@ -6,7 +6,7 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 
 # Binary names
-BINARY_NAME=torrentdragon
+BINARY_NAME=EepTorrent
 
 # Build directory
 BUILD_DIR=bin

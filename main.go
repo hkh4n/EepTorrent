@@ -1,73 +1,86 @@
 package main
 
 import (
-	"crypto/sha1"
 	"fmt"
-	"github.com/zeebo/bencode"
+	"github.com/eyedeekay/sam3"
+	"log"
+	"math/rand"
+	"net"
 	"os"
+	"time"
 )
 
-type TorrentFile struct {
-	Announce string `bencode:"announce"`
-	Info     struct {
-		Name        string `bencode:"name"`
-		PieceLength int    `bencode:"piece length"`
-		Pieces      string `bencode:"pieces"`
-		Length      int    `bencode:"length"`
-	} `bencode:"info"`
-	InfoBytes []byte `bencode:"-"`
+// Helper function to generate a random 20-byte hash for testing
+func generateRandomHash() []byte {
+	hash := make([]byte, 20)
+	rand.Seed(time.Now().UnixNano())
+	rand.Read(hash)
+	return hash
 }
 
-func parseTorrentFile(path string) (*TorrentFile, error) {
-	file, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var torrent TorrentFile
-	err = bencode.DecodeBytes(file, &torrent)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract raw info dict for hash calculation
-	var decoded map[string]interface{}
-	err = bencode.DecodeBytes(file, &decoded)
-	if err != nil {
-		return nil, err
-	}
-
-	// get the rwa info
-	if info, ok := decoded["info"]; ok {
-		torrent.InfoBytes, err = bencode.EncodeBytes(info)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return &torrent, nil
-}
-func (t *TorrentFile) InfoHash() ([20]byte, error) {
-	return sha1.Sum(t.InfoBytes), nil
-}
+// http://zzz.i2p/files/trackers.html
+// tracker2.postman.i2p/announce.php
 func main() {
-	tf, err := parseTorrentFile("../examples/test.txt.torrent")
+	// Connect to SAM
+	sam, err := sam3.NewSAM("127.0.0.1:7656")
 	if err != nil {
-		fmt.Printf("Error parsing torrent: %v\n", err)
-		return
+		panic(err)
+	}
+	defer sam.Close()
+
+	// Generate keys
+	keys, err := sam.NewKeys()
+	if err != nil {
+		panic(err)
 	}
 
-	infoHash, err := tf.InfoHash()
+	sessionName := fmt.Sprintf("postman-%d", os.Getpid())
+	session, err := sam.NewPrimarySession(sessionName, keys, sam3.Options_Default)
 	if err != nil {
-		fmt.Printf("error calculating info hash: %v\n", err)
-		return
+		panic(err)
+	}
+	defer session.Close()
+
+	trackerAddr, err := sam.Lookup("tracker2.postman.i2p")
+	if err != nil {
+		log.Fatalf("Failed to look up tracker address: %v", err)
 	}
 
-	// Print basic info
-	fmt.Printf("Announce: %s\n", tf.Announce)
-	fmt.Printf("Name: %s\n", tf.Info.Name)
-	fmt.Printf("Piece Length: %d\n", tf.Info.PieceLength)
-	fmt.Printf("Total Length: %d\n", tf.Info.Length)
-	fmt.Printf("Info Hash: %x\n", infoHash)
-	fmt.Printf("Pieces: %d pieces\n", len(tf.Info.Pieces)/20) // Each piece hash is 20 bytes
+	// Create a UDP connection to the tracker's destination and port
+	conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", trackerAddr.Base32(), 6881))
+	if err != nil {
+		log.Fatalf("Failed to establish UDP connection: %v", err)
+	}
+	defer conn.Close()
+	// Create a random info hash and peer ID for testing
+	//infoHash := metainfo.NewRandomHash()
+	//peerID := metainfo.NewRandomHash()
+	// Generate a random info hash and peer ID for the announce request
+	infoHash := generateRandomHash()
+	peerID := generateRandomHash()
+
+	// Construct the UDP announce payload similar to i2psnark
+	// Here, we create a minimal UDP announce packet
+	payload := make([]byte, 98)
+	copy(payload[16:36], infoHash) // Info hash
+	copy(payload[36:56], peerID)   // Peer ID
+
+	// Set the event type (e.g., 2 for started)
+	payload[80] = 2
+
+	// Send the announce request to the tracker
+	_, err = conn.Write(payload)
+	if err != nil {
+		log.Fatalf("Failed to send announce packet: %v", err)
+	}
+
+	// Read the response from the tracker
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Fatalf("Failed to read response: %v", err)
+	}
+
+	// Print the response from the tracker
+	fmt.Println("Response from tracker:", string(buf[:n]))
 }
