@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"github.com/go-i2p/sam3"
 	"io"
 	"log"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/go-i2p/go-i2p-bt/metainfo"
@@ -17,6 +20,49 @@ cpfrxck5c4stxqrrjsp5syqvhfbtmc2jebyiyuv4hwjnhbxopuyq.b32.i2p
 cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
 
 */
+// Override the default Dial function to use I2P
+func init() {
+	pp.Dial = dialI2P
+}
+
+// Global SAM client for I2P connections
+var sam *sam3.SAM
+
+func dialI2P(network, addr string) (net.Conn, error) {
+	var err error
+	if sam == nil {
+		// Connect to the SAM bridge
+		sam, err = sam3.NewSAM("127.0.0.1:7656")
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to SAM bridge: %v", err)
+		}
+	}
+
+	// Generate the keys
+	keys, err := sam.NewKeys()
+	// Create a new I2P session for each connection
+	stream, err := sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create I2P stream session: %v", err)
+	}
+
+	// Extract the I2P destination from the address
+	dest := strings.Split(addr, ":")[0]
+	if !strings.HasSuffix(dest, ".i2p") {
+		dest = dest + ".i2p"
+	}
+	destkeys, err := sam.Lookup(dest)
+	if err != nil {
+		panic(err)
+	}
+	// Dial through I2P
+	conn, err := stream.DialI2P(destkeys)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial I2P destination: %v", err)
+	}
+
+	return conn, nil
+}
 
 const BlockSize = 16384 // 16KB blocks
 
@@ -58,7 +104,11 @@ func main() {
 		left:     info.TotalLength(),
 	}
 	defer dm.writer.Close()
-
+	defer func() {
+		if sam != nil {
+			sam.Close()
+		}
+	}()
 	// Try direct connection to I2P peer if tracker-less
 	peer := "p6zlufbvhcn426427wiaylzejdwg4hbdlrccst6owijhlvgalb7a.b32.i2p:6881" // Replace with actual peer
 	peerId := metainfo.NewRandomHash()

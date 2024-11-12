@@ -51,5 +51,3 @@ require (
 	golang.org/x/text v0.19.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/eyedeekay/sam3 => github.com/eyedeekay/sam3 v0.33.9-0.20241023173438-97d1c812d327
