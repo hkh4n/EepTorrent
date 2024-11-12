@@ -4,7 +4,6 @@ go 1.23.2
 
 require (
 	fyne.io/fyne/v2 v2.5.2
-	github.com/eyedeekay/sam3 v0.33.8
 	github.com/go-i2p/go-i2p-bt v0.0.0-20241109165341-02c954c22874
 	gonum.org/v1/plot v0.15.0
 )
