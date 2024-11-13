@@ -4,6 +4,7 @@ go 1.23.2
 
 require (
 	fyne.io/fyne/v2 v2.5.2
+	github.com/eyedeekay/sam3 v0.33.7
 	github.com/go-i2p/go-i2p-bt v0.0.0-20241109165341-02c954c22874
 	gonum.org/v1/plot v0.15.0
 )
@@ -25,6 +26,7 @@ require (
 	github.com/go-gl/gl v0.0.0-20211210172815-726fda9656d6 // indirect
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20240506104042-037f3cc74f2a // indirect
 	github.com/go-i2p/i2pkeys v0.0.0-20241108200332-e4f5ccdff8c4 // indirect
+	github.com/go-i2p/sam3 v0.0.0-00010101000000-000000000000 // indirect
 	github.com/go-latex/latex v0.0.0-20240709081214-31cef3c7570e // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/go-text/render v0.2.0 // indirect
@@ -51,3 +53,5 @@ require (
 	golang.org/x/text v0.19.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/go-i2p/sam3 => github.com/eyedeekay/sam3 v0.0.0-20240109194540-19d8d8e4a83a

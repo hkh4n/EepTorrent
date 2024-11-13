@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/go-i2p/sam3"
+	"github.com/eyedeekay/sam3"
 	"io"
 	"log"
 	"net"
@@ -40,6 +40,10 @@ func dialI2P(network, addr string) (net.Conn, error) {
 
 	// Generate the keys
 	keys, err := sam.NewKeys()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate keys: %v", err)
+	}
+
 	// Create a new I2P session for each connection
 	stream, err := sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
 	if err != nil {
@@ -48,13 +52,17 @@ func dialI2P(network, addr string) (net.Conn, error) {
 
 	// Extract the I2P destination from the address
 	dest := strings.Split(addr, ":")[0]
+	// For .b32.i2p addresses, just add .i2p if missing
 	if !strings.HasSuffix(dest, ".i2p") {
-		dest = dest + ".i2p"
+		dest += ".i2p"
 	}
+
+	// Lookup the destination
 	destkeys, err := sam.Lookup(dest)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to lookup I2P destination: %v", err)
 	}
+
 	// Dial through I2P
 	conn, err := stream.DialI2P(destkeys)
 	if err != nil {
@@ -110,8 +118,13 @@ func main() {
 		}
 	}()
 	// Try direct connection to I2P peer if tracker-less
-	peer := "p6zlufbvhcn426427wiaylzejdwg4hbdlrccst6owijhlvgalb7a.b32.i2p:6881" // Replace with actual peer
+	peer := "cpfrxck5c4stxqrrjsp5syqvhfbtmc2jebyiyuv4hwjnhbxopuyq.b32.i2p:6881" // Replace with actual peer
 	peerId := metainfo.NewRandomHash()
+
+	log.Printf("Starting download process...")
+	log.Printf("Local Peer ID: %s", peerId.HexString())
+	log.Printf("Info Hash: %s", mi.InfoHash().HexString())
+	log.Printf("Attempting connection to peer: %s", peer)
 
 	fmt.Printf("Attempting connection to peer: %s\n", peer)
 	err = downloadFromPeer(peer, peerId, mi.InfoHash(), dm)
@@ -121,31 +134,42 @@ func main() {
 }
 
 func downloadFromPeer(peer string, id, infohash metainfo.Hash, dm *downloadManager) error {
-	// Create peer connection with extended protocol support
-	pc, err := pp.NewPeerConnByDial(peer, id, infohash, time.Second*30)
+	// Create I2P connection first
+	log.Printf("Initiating I2P connection to peer: %s", peer)
+	conn, err := dialI2P("tcp", peer)
 	if err != nil {
-		return fmt.Errorf("failed to connect to peer: %v", err)
+		return fmt.Errorf("failed to establish I2P connection: %v", err)
 	}
+
+	// Create peer connection using the established I2P connection
+	pc := pp.NewPeerConn(conn, id, infohash)
 	defer pc.Close()
+
+	// Set connection parameters
+	pc.MaxLength = 256 * 1024 // 256KB
+	pc.Timeout = time.Second * 30
 
 	// Enable extended protocol and metadata exchange
 	pc.ExtBits.Set(pp.ExtensionBitExtended)
 
 	// Perform handshake
+	log.Printf("Performing BitTorrent handshake...")
 	if err := pc.Handshake(); err != nil {
 		return fmt.Errorf("handshake failed: %v", err)
 	}
-	fmt.Printf("Connected to peer %s (ID: %s)\n", peer, pc.PeerID.HexString())
+	log.Printf("Connected to peer %s (ID: %s)", peer, pc.PeerID.HexString())
 
 	// Create download handler
 	handler := createDownloadHandler(dm)
 
-	// Send interested and unchoke messages
+	// Send interested message to start receiving pieces
+	log.Printf("Sending interested message...")
 	if err := pc.SetInterested(); err != nil {
 		return fmt.Errorf("failed to send interested: %v", err)
 	}
 
 	// Main download loop
+	log.Printf("Starting download loop...")
 	for !dm.IsFinished() {
 		msg, err := pc.ReadMsg()
 		if err != nil {
@@ -157,6 +181,8 @@ func downloadFromPeer(peer string, id, infohash metainfo.Hash, dm *downloadManag
 
 		err = pc.HandleMessage(msg, handler)
 		if err == pp.ErrChoked {
+			log.Printf("Peer has choked us, waiting...")
+			time.Sleep(time.Second) // Wait a bit before retrying
 			continue
 		}
 		if err != nil {
@@ -167,14 +193,27 @@ func downloadFromPeer(peer string, id, infohash metainfo.Hash, dm *downloadManag
 		if !dm.doing && !pc.PeerChoked {
 			err = requestNextBlock(pc, dm)
 			if err != nil {
+				// If this piece isn't available, try the next one
+				if strings.Contains(err.Error(), "piece not available") {
+					dm.pindex++
+					dm.poffset = 0
+					continue
+				}
 				return fmt.Errorf("failed to request block: %v", err)
 			}
 		}
+
+		// Print progress periodically
+		if dm.downloaded > 0 {
+			progress := float64(dm.downloaded) / float64(dm.writer.Info().TotalLength()) * 100
+			fmt.Printf("\rProgress: %.2f%% - Downloaded: %d bytes, Left: %d bytes",
+				progress, dm.downloaded, dm.left)
+		}
 	}
 
+	fmt.Printf("\nDownload completed! Total downloaded: %d bytes\n", dm.downloaded)
 	return nil
 }
-
 func createDownloadHandler(dm *downloadManager) pp.Handler {
 	return &downloadHandler{
 		NoopHandler: pp.NoopHandler{},
