@@ -275,21 +275,42 @@ func main() {
 		peerHash := peersBytes[i : i+32]
 		peerHashes = append(peerHashes, peerHash)
 	}
-	for _, peerHash := range peerHashes {
+	for i, peerHash := range peerHashes {
+		peerSAM, err := sam3.NewSAM("127.0.0.1:7656")
+		if err != nil {
+			log.Printf("Failed to create SAM connection: %v", err)
+			continue
+		}
+		defer peerSAM.Close()
+		peerKeys, err := peerSAM.NewKeys()
+		if err != nil {
+			log.Printf("Failed to generate keys: %v", err)
+			continue
+		}
+		// Create unique session name for each peer
+		peerSessionName := fmt.Sprintf("peer-session-%d-%d", os.Getpid(), i)
+		peerStream, err := peerSAM.NewPrimarySessionWithSignature(
+			peerSessionName,
+			peerKeys,
+			sam3.Options_Default,
+			strconv.Itoa(7),
+		)
+		defer peerStream.Close()
+
 		// Convert hash to Base32 address
 		peerHashBase32 := strings.ToLower(base32.StdEncoding.EncodeToString(peerHash))
 		peerB32Addr := cleanBase32Address(peerHashBase32)
 		//peerB32Addr := peerHashBase32 + ".b32.i2p"
 
 		// Lookup the peer's Destination
-		peerDest, err := rawSAM.Lookup(peerB32Addr)
+		peerDest, err := peerSAM.Lookup(peerB32Addr)
 		if err != nil {
 			log.Printf("Failed to lookup peer %s: %v", peerB32Addr, err)
 			continue
 		}
 
 		// Attempt to connect
-		peerConn, err := rawStream.Dial("tcp", peerDest.String())
+		peerConn, err := peerStream.Dial("tcp", peerDest.String())
 		if err != nil {
 			log.Printf("Failed to connect to peer %s: %v", peerB32Addr, err)
 			continue
