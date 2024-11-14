@@ -151,6 +151,11 @@ func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 
 	return nil
 }
+func cleanBase32Address(addr string) string {
+	// Remove any trailing equals signs
+	addr = strings.TrimRight(addr, "=")
+	return addr + ".b32.i2p"
+}
 func main() {
 	//http://tracker2.postman.i2p/announce.php
 	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
@@ -247,15 +252,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to parse tracker response: %v", err)
 	}
+	// Extract 'peers' key
 	peersValue, ok := trackerResp["peers"]
 	if !ok {
 		log.Fatalf("No 'peers' key in tracker response")
 	}
 
-	peersBytes, ok := peersValue.([]byte)
+	// Handle compact peers
+	peersStr, ok := peersValue.(string)
 	if !ok {
-		log.Fatalf("'peers' is not a byte slice")
+		log.Fatalf("'peers' is not a string")
 	}
+
+	peersBytes := []byte(peersStr)
 
 	if len(peersBytes)%32 != 0 {
 		log.Fatalf("Peers string length is not a multiple of 32")
@@ -269,7 +278,8 @@ func main() {
 	for _, peerHash := range peerHashes {
 		// Convert hash to Base32 address
 		peerHashBase32 := strings.ToLower(base32.StdEncoding.EncodeToString(peerHash))
-		peerB32Addr := peerHashBase32 + ".b32.i2p"
+		peerB32Addr := cleanBase32Address(peerHashBase32)
+		//peerB32Addr := peerHashBase32 + ".b32.i2p"
 
 		// Lookup the peer's Destination
 		peerDest, err := rawSAM.Lookup(peerB32Addr)
