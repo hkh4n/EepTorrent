@@ -2,14 +2,20 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"github.com/eyedeekay/sam3"
+	"net"
+
+	//"github.com/eyedeekay/i2pkeys"
+	//"github.com/eyedeekay/sam3"
 	"github.com/go-i2p/go-i2p-bt/bencode"
+	"github.com/go-i2p/i2pkeys"
+	"github.com/go-i2p/sam3"
 	"io"
 	"log"
-	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,43 +42,21 @@ cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
 */
 // Override the default Dial function to use I2P
 func init() {
-	pp.Dial = dialI2P
+
 }
 
 // Global SAM client for I2P connections
 var sam *sam3.SAM
+var localKeys *i2pkeys.I2PKeys
+var stream *sam3.StreamSession
 
-func dialI2P(network, addr string) (net.Conn, error) {
-	var err error
-	if sam == nil {
-		// Connect to the SAM bridge
-		sam, err = sam3.NewSAM("127.0.0.1:7656")
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to SAM bridge: %v", err)
-		}
-	}
-
-	// Generate the keys
-	keys, err := sam.NewKeys()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate keys: %v", err)
-	}
-
-	// Create a new I2P session for each connection
-	stream, err := sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create I2P stream session: %v", err)
-	}
-
+func dialI2P(network string, addr string) (net.Conn, error) {
+	fmt.Println("dialI2P called")
 	// Extract the I2P destination from the address
-	dest := strings.Split(addr, ":")[0]
-	// For .b32.i2p addresses, just add .i2p if missing
-	if !strings.HasSuffix(dest, ".i2p") {
-		dest += ".i2p"
-	}
 
 	// Lookup the destination
-	destkeys, err := sam.Lookup(dest)
+	fmt.Printf("looking up %s\n", addr)
+	destkeys, err := sam.Lookup(addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup I2P destination: %v", err)
 	}
@@ -117,7 +101,7 @@ func urlEncodeBytes(b []byte) string {
 }
 
 // Announce to the tracker without using HTTP proxy
-func announceOverI2P(infohash, peerId metainfo.Hash, trackerDest string, port int) ([]string, error) {
+func announceOverI2P(infohash, peerId metainfo.Hash, destination string, trackerDest string, port int) ([]string, error) {
 	// Establish a TCP connection via I2P
 	conn, err := dialI2P("tcp", trackerDest)
 	if err != nil {
@@ -136,14 +120,15 @@ func announceOverI2P(infohash, peerId metainfo.Hash, trackerDest string, port in
 	query.Set("uploaded", "0")
 	query.Set("downloaded", "0")
 	//query.Set("left", strconv.FormatUint(uint64(infohash.CountPieces()), 10))
+	query.Set("left", "0")
 	query.Set("compact", "1")
+	query.Set("ip", urlEncodeBytes([]byte(destination))) // Replace with your I2P Destination
 	query.Set("event", "started")
-	query.Set("ip", urlEncodeBytes([]byte("your_i2p_destination_here"))) // Replace with your I2P Destination
 
-	announcePath := fmt.Sprintf("/announce?%s", query.Encode())
+	announcePath := fmt.Sprintf("/announce.php?%s", query.Encode())
 
 	// Construct the HTTP GET request
-	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: GoBTClient/1.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, trackerDest)
+	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EepTorrent/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, trackerDest)
 
 	// Send the HTTP GET request
 	_, err = conn.Write([]byte(httpRequest))
@@ -205,6 +190,7 @@ func announceOverI2P(infohash, peerId metainfo.Hash, trackerDest string, port in
 			// This part may require additional logic based on your tracker implementation
 			// For simplicity, we'll represent peers by their hashes
 			peerStr := hex.EncodeToString([]byte(hash))
+			fmt.Printf("peerStr:%s\n", peerStr)
 			peerList = append(peerList, peerStr)
 		}
 	case []interface{}:
@@ -228,7 +214,45 @@ func announceOverI2P(infohash, peerId metainfo.Hash, trackerDest string, port in
 
 	return peerList, nil
 }
+func init() {
+
+	sam, err := sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		panic(err)
+	}
+
+	// Generate the keys
+	keys, err := sam.NewKeys()
+	if err != nil {
+		panic(err)
+	}
+	localKeys = &keys
+
+	stream, err = sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
+	if err != nil {
+		panic(err)
+	}
+
+	pp.Dial = dialI2P
+
+}
+func generatePeerId() string {
+	// First 8 bytes: Client identifier
+	// -GT0001- means "GoTorrent version 0001"
+	clientId := "-GT0001-"
+
+	// Generate 12 random bytes for uniqueness
+	random := make([]byte, 12)
+	rand.Read(random)
+
+	// Combine them into a 20-byte peer ID
+	return fmt.Sprintf("%s%x", clientId, random)
+}
+
 func main() {
+	//http://tracker2.postman.i2p/announce.php
+	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
+
 	// Load the torrent file
 	mi, err := metainfo.LoadFromFile("torrent-i2pify+script.torrent")
 	if err != nil {
@@ -262,11 +286,12 @@ func main() {
 
 	// END DOWNLOAD MANAGER
 
-	trackerDest := "ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p/announce.php"
+	trackerDest := "tracker2.postman.i2p"
 	peerId := metainfo.NewRandomHash()
 
 	// Perform announce
-	peers, err := announceOverI2P(mi.InfoHash(), peerId, trackerDest, 6881)
+
+	peers, err := announceOverI2P(mi.InfoHash(), peerId, localKeys.Addr().Base32(), trackerDest, 6881)
 	if err != nil {
 		log.Fatalf("Announce failed: %v", err)
 	}
@@ -463,4 +488,55 @@ func (dm *downloadManager) OnBlock(index, offset uint32, b []byte) error {
 		}
 	}
 	return err
+}
+
+func example_postman_request() {
+	fmt.Println("Generating new SAM")
+	_sam, err := sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Generated new SAM")
+	//	defer _sam.Close()
+
+	keys, err := _sam.NewKeys()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Generated new keys")
+	sessionName := fmt.Sprintf("postman-tracker-%d", os.Getpid())
+	_stream, err := _sam.NewPrimarySession(sessionName, keys, sam3.Options_Default)
+	fmt.Println("Generated new primary session")
+	defer _stream.Close()
+
+	//postmanAddr, err := _sam.Lookup("ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p")
+	postmanAddr, err := _sam.Lookup("tracker2.postman.i2p")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Connecting to %s", postmanAddr)
+
+	requestStr := fmt.Sprintf("GET /announce.php?info_hash=%s&peer_id=%s&port=6881&uploaded=0&downloaded=0&left=0&compact=1&event=started HTTP/1.1\r\n"+
+		"Host: tracker2.postman.i2p\r\n"+
+		"User-Agent: EepTorrent/0.0.0\r\n"+
+		"Accept: */*\r\n\r\n",
+		url.QueryEscape("73D3CA92B5C927D2845D4A3BF67871EC866F11FA"),
+		url.QueryEscape(generatePeerId()))
+
+	conn, err := _stream.Dial("tcp", postmanAddr.String())
+	if err != nil {
+		panic(err)
+	}
+
+	conn.Write([]byte(requestStr))
+	buffer := make([]byte, 4096)
+	// Read the response into the buffer
+	n, err := conn.Read(buffer)
+	if err != nil {
+		panic(err)
+	}
+
+	// Convert response to string and print it
+	response := string(buffer[:n])
+	fmt.Println(response)
 }
