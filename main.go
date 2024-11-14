@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/base32"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -283,7 +284,49 @@ func checkPostmanTrackerResponse(response string) error {
 
 	return nil
 }
+func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
+	// Build the handshake message
+	pstr := "BitTorrent protocol"
+	pstrlen := byte(len(pstr))
+	reserved := make([]byte, 8)
+	handshake := make([]byte, 49+len(pstr))
+	handshake[0] = pstrlen
+	copy(handshake[1:], pstr)
+	copy(handshake[1+len(pstr):], reserved)
+	copy(handshake[1+len(pstr)+8:], infoHash)
+	copy(handshake[1+len(pstr)+8+20:], []byte(peerId))
 
+	// Send handshake
+	_, err := conn.Write(handshake)
+	if err != nil {
+		return fmt.Errorf("failed to send handshake: %v", err)
+	}
+
+	// Read handshake response
+	response := make([]byte, 68)
+	_, err = io.ReadFull(conn, response)
+	if err != nil {
+		return fmt.Errorf("failed to read handshake: %v", err)
+	}
+
+	// Validate response
+	if response[0] != pstrlen {
+		return fmt.Errorf("invalid pstrlen in handshake")
+	}
+	if string(response[1:1+len(pstr)]) != pstr {
+		return fmt.Errorf("invalid protocol string in handshake")
+	}
+	// Optionally check reserved bytes
+	// Extract info_hash and peer_id from response
+	receivedInfoHash := response[1+len(pstr)+8 : 1+len(pstr)+8+20]
+	if !bytes.Equal(receivedInfoHash, infoHash) {
+		return fmt.Errorf("info_hash does not match")
+	}
+	// Peer ID can be extracted if needed
+	// receivedPeerId := response[1+len(pstr)+8+20:]
+
+	return nil
+}
 func main() {
 	//http://tracker2.postman.i2p/announce.php
 	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
@@ -370,6 +413,65 @@ func main() {
 
 	response := responseBuffer.String()
 	fmt.Println(response)
+	headerEnd := strings.Index(response, "\r\n\r\n")
+	if headerEnd == -1 {
+		log.Fatalf("Invalid HTTP response: no header-body separator found")
+	}
+	body := response[headerEnd+4:]
+	var trackerResp map[string]interface{}
+	err = bencode.DecodeBytes([]byte(body), &trackerResp)
+	if err != nil {
+		log.Fatalf("Failed to parse tracker response: %v", err)
+	}
+	peersValue, ok := trackerResp["peers"]
+	if !ok {
+		log.Fatalf("No 'peers' key in tracker response")
+	}
+
+	peersBytes, ok := peersValue.([]byte)
+	if !ok {
+		log.Fatalf("'peers' is not a byte slice")
+	}
+
+	if len(peersBytes)%32 != 0 {
+		log.Fatalf("Peers string length is not a multiple of 32")
+	}
+
+	peerHashes := [][]byte{}
+	for i := 0; i < len(peersBytes); i += 32 {
+		peerHash := peersBytes[i : i+32]
+		peerHashes = append(peerHashes, peerHash)
+	}
+	for _, peerHash := range peerHashes {
+		// Convert hash to Base32 address
+		peerHashBase32 := strings.ToLower(base32.StdEncoding.EncodeToString(peerHash))
+		peerB32Addr := peerHashBase32 + ".b32.i2p"
+
+		// Lookup the peer's Destination
+		peerDest, err := rawSAM.Lookup(peerB32Addr)
+		if err != nil {
+			log.Printf("Failed to lookup peer %s: %v", peerB32Addr, err)
+			continue
+		}
+
+		// Attempt to connect
+		peerConn, err := rawStream.Dial("tcp", peerDest.String())
+		if err != nil {
+			log.Printf("Failed to connect to peer %s: %v", peerB32Addr, err)
+			continue
+		}
+		defer peerConn.Close()
+
+		// Perform the BitTorrent handshake
+		err = performHandshake(peerConn, mi.InfoHash().Bytes(), generatePeerId())
+		if err != nil {
+			log.Printf("Handshake with peer %s failed: %v", peerB32Addr, err)
+			continue
+		}
+
+		// Now you can exchange messages
+		// ...
+	}
 
 	// Check if response contains HTML
 	/*
@@ -671,5 +773,90 @@ func example_postman_request() {
 
 	// Convert response to string and print it
 	response := string(buffer[:n])
+	fmt.Println(response)
+}
+
+func example_simp_request() {
+	mi, err := metainfo.LoadFromFile("torrent-i2pify+script.torrent")
+	if err != nil {
+		log.Fatalf("Failed to load torrent: %v", err)
+	}
+
+	info, err := mi.Info()
+	if err != nil {
+		log.Fatalf("Failed to parse torrent info: %v", err)
+	}
+
+	fmt.Printf("Downloading: %s\n", info.Name)
+	fmt.Printf("Info Hash: %s\n", mi.InfoHash().HexString())
+	fmt.Printf("Total size: %d bytes\n", info.TotalLength())
+	fmt.Printf("Piece length: %d bytes\n", info.PieceLength)
+	fmt.Printf("Pieces: %d\n", len(info.Pieces))
+
+	//BEGIN RAW
+	rawSAM, err := sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		panic(err)
+	}
+	defer rawSAM.Close()
+	rawKeys, err := rawSAM.NewKeys()
+	if err != nil {
+		panic(err)
+	}
+	sessionName := fmt.Sprintf("postman-tracker-%d", os.Getpid())
+	//rawStream, err := rawSAM.NewPrimarySession(sessionName, rawKeys, sam3.Options_Default)
+	rawStream, err := rawSAM.NewPrimarySessionWithSignature(sessionName, rawKeys, sam3.Options_Default, strconv.Itoa(7))
+	defer rawStream.Close()
+
+	//postmanAddr, err := rawSAM.Lookup("tracker2.postman.i2p")
+	postmanAddr, err := rawSAM.Lookup("wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p")
+	if err != nil {
+		panic(err)
+	}
+
+	//create url string
+	//ihEnc := "73D3CA92B5C927D2845D4A3BF67871EC866F11FA"
+	ihEnc := mi.InfoHash().Bytes()
+	//ihEnc := mi.InfoHash().String()
+	pidEnc := generatePeerId()
+	query := url.Values{}
+	query.Set("info_hash", string(ihEnc))
+	query.Set("peer_id", pidEnc)
+	query.Set("port", strconv.Itoa(6881))
+	query.Set("uploaded", "0")
+	query.Set("downloaded", "0")
+	query.Set("left", "65536")
+	query.Set("compact", "0")
+	destination := urlEncodeBytes([]byte(rawKeys.Addr().Base64()))
+	destination += ".i2p"
+	//query.Set("ip", urlEncodeBytes([]byte(rawKeys.Addr().Base64())))
+	query.Set("ip", destination)
+	query.Set("event", "started")
+	announcePath := fmt.Sprintf("/a?%s", query.Encode())
+	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EXPERIMENTAL-SOFTWARE/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, postmanAddr.Base32())
+	fmt.Printf("BEGIN HTTP REQUEST\n%s\nEND HTTP REQUEST\n", httpRequest)
+	conn, err := rawStream.Dial("tcp", postmanAddr.String())
+	if err != nil {
+		panic(err)
+	}
+	conn.Write([]byte(httpRequest))
+	// Read the response
+	// Create a bytes.Buffer to store the complete response
+	var responseBuffer bytes.Buffer
+	buffer := make([]byte, 4096)
+
+	// Read until no more data or error
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+		responseBuffer.Write(buffer[:n])
+	}
+
+	response := responseBuffer.String()
 	fmt.Println(response)
 }
