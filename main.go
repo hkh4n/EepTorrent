@@ -298,7 +298,10 @@ func main() {
 	query.Set("downloaded", "0")
 	query.Set("left", "0")
 	query.Set("compact", "0")
-	query.Set("ip", urlEncodeBytes([]byte(rawKeys.Addr().Base64())))
+	destination := urlEncodeBytes([]byte(rawKeys.Addr().Base64()))
+	destination += ".i2p"
+	//query.Set("ip", urlEncodeBytes([]byte(rawKeys.Addr().Base64())))
+	query.Set("ip", destination)
 	query.Set("event", "started")
 	announcePath := fmt.Sprintf("/announce.php?%s", query.Encode())
 	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EepTorrent/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, postmanAddr.Base32())
