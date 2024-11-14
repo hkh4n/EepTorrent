@@ -1,18 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/base32"
-	"encoding/hex"
 	"fmt"
 	"net"
 
 	//"github.com/eyedeekay/i2pkeys"
 	//"github.com/eyedeekay/sam3"
 	"github.com/go-i2p/go-i2p-bt/bencode"
-	"github.com/go-i2p/i2pkeys"
+	"github.com/go-i2p/go-i2p-bt/metainfo"
+	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/go-i2p/sam3"
 	"io"
 	"log"
@@ -20,10 +19,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
-
-	"github.com/go-i2p/go-i2p-bt/metainfo"
-	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 )
 
 /* //Trackers
@@ -43,31 +38,6 @@ cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
 
 */
 
-// Global SAM client for I2P connections
-var sam *sam3.SAM
-var localKeys *i2pkeys.I2PKeys
-var stream *sam3.StreamSession
-
-func dialI2P(network string, addr string) (net.Conn, error) {
-	fmt.Println("dialI2P called")
-	// Extract the I2P destination from the address
-
-	// Lookup the destination
-	fmt.Printf("looking up %s\n", addr)
-	destkeys, err := sam.Lookup(addr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to lookup I2P destination: %v", err)
-	}
-
-	// Dial through I2P
-	conn, err := stream.DialI2P(destkeys)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial I2P destination: %v", err)
-	}
-
-	return conn, nil
-}
-
 const BlockSize = 16384 // 16KB blocks
 
 type downloadManager struct {
@@ -82,145 +52,6 @@ type downloadManager struct {
 	left       int64
 }
 
-// Announce to the tracker without using HTTP proxy
-func announceOverI2P(infohash, peerId metainfo.Hash, destination string, trackerDest string, port int) ([]string, error) {
-	// Establish a TCP connection via I2P
-	conn, err := dialI2P("tcp", trackerDest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial tracker via I2P: %v", err)
-	}
-	defer conn.Close()
-
-	// Construct the announce URL path with query parameters
-	ihEnc := urlEncodeBytes(infohash[:])
-	pidEnc := urlEncodeBytes(peerId[:])
-
-	query := url.Values{}
-	query.Set("info_hash", ihEnc)
-	query.Set("peer_id", pidEnc)
-	query.Set("port", strconv.Itoa(port))
-	query.Set("uploaded", "0")
-	query.Set("downloaded", "0")
-	//query.Set("left", strconv.FormatUint(uint64(infohash.CountPieces()), 10))
-	query.Set("left", "0")
-	query.Set("compact", "1")
-	query.Set("ip", urlEncodeBytes([]byte(destination))) // Replace with your I2P Destination
-	query.Set("event", "started")
-
-	announcePath := fmt.Sprintf("/announce.php?%s", query.Encode())
-
-	// Construct the HTTP GET request
-	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EepTorrent/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, trackerDest)
-
-	// Send the HTTP GET request
-	_, err = conn.Write([]byte(httpRequest))
-	if err != nil {
-		return nil, fmt.Errorf("failed to send announce request: %v", err)
-	}
-
-	// Read the HTTP response
-	reader := bufio.NewReader(conn)
-	statusLine, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, fmt.Errorf("failed to read status line: %v", err)
-	}
-
-	if !strings.Contains(statusLine, "200 OK") {
-		return nil, fmt.Errorf("tracker responded with non-OK status: %s", statusLine)
-	}
-
-	// Read headers
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, fmt.Errorf("failed to read headers: %v", err)
-		}
-		if line == "\r\n" {
-			break // End of headers
-		}
-	}
-
-	// Read body
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %v", err)
-	}
-
-	// Parse bencoded response
-	var trackerResp map[string]interface{}
-	if err := bencode.DecodeBytes(body, &trackerResp); err != nil {
-		return nil, fmt.Errorf("failed to decode tracker response: %v", err)
-	}
-
-	// Extract peers
-	peers, ok := trackerResp["peers"]
-	if !ok {
-		return nil, fmt.Errorf("tracker response missing 'peers' field")
-	}
-
-	var peerList []string
-	switch p := peers.(type) {
-	case string:
-		// Compact format: each peer is 32 bytes SHA-256 Hash of Destination
-		if len(p)%32 != 0 {
-			return nil, fmt.Errorf("invalid compact peer format")
-		}
-		for i := 0; i < len(p); i += 32 {
-			hash := p[i : i+32]
-			// Convert SHA-256 hash to Base64 I2P Destination if needed
-			// Assuming you have a mapping or a way to resolve hash to destination
-			// This part may require additional logic based on your tracker implementation
-			// For simplicity, we'll represent peers by their hashes
-			peerStr := hex.EncodeToString([]byte(hash))
-			fmt.Printf("peerStr:%s\n", peerStr)
-			peerList = append(peerList, peerStr)
-		}
-	case []interface{}:
-		// Non-compact format: list of peer dictionaries
-		for _, peer := range p {
-			peerMap, ok := peer.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			ip, ok1 := peerMap["ip"].(string)
-			portFloat, ok2 := peerMap["port"].(float64)
-			if ok1 && ok2 {
-				port := int(portFloat)
-				peerStr := fmt.Sprintf("%s:%d", ip, port)
-				peerList = append(peerList, peerStr)
-			}
-		}
-	default:
-		return nil, fmt.Errorf("unknown 'peers' format in tracker response")
-	}
-
-	return peerList, nil
-}
-func init() {
-	/*
-
-		sam, err := sam3.NewSAM("127.0.0.1:7656")
-		if err != nil {
-			panic(err)
-		}
-
-		// Generate the keys
-		keys, err := sam.NewKeys()
-		if err != nil {
-			panic(err)
-		}
-		localKeys = &keys
-
-		stream, err = sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
-		if err != nil {
-			panic(err)
-		}
-
-		pp.Dial = dialI2P
-
-	*/
-
-}
 func generatePeerId() string {
 	// Client identifier (8 bytes)
 	clientId := "-GT0001-"
@@ -234,13 +65,6 @@ func generatePeerId() string {
 
 	// Combine them into a 20-byte peer ID
 	return clientId + string(randomBytes)
-}
-func percentEncode(data []byte) string {
-	var encoded strings.Builder
-	for _, b := range data {
-		encoded.WriteString(fmt.Sprintf("%%%02X", b))
-	}
-	return encoded.String()
 }
 
 // Helper function to URL-encode binary data as per BitTorrent protocol
@@ -504,128 +328,8 @@ func main() {
 	//
 	//
 	//
-
-	// Initialize download manager
-	dm := &downloadManager{
-		writer:   metainfo.NewWriter("", info, 0600),
-		plength:  info.PieceLength,
-		bitfield: pp.NewBitField(info.CountPieces()),
-		left:     info.TotalLength(),
-	}
-	defer dm.writer.Close()
-	defer func() {
-		if sam != nil {
-			sam.Close()
-		}
-	}()
-
-	// END DOWNLOAD MANAGER
-
-	trackerDest := "tracker2.postman.i2p"
-	peerId := metainfo.NewRandomHash()
-
-	// Perform announce
-
-	peers, err := announceOverI2P(mi.InfoHash(), peerId, localKeys.Addr().Base32(), trackerDest, 6881)
-	if err != nil {
-		log.Fatalf("Announce failed: %v", err)
-	}
-
-	log.Printf("Received %d peers from tracker", len(peers))
-	for _, p := range peers {
-		fmt.Println("Peer:", p)
-		// Implement peer connection logic here
-		// For example:
-		go func(peerStr string) {
-			err := downloadFromPeer(peerStr, peerId, mi.InfoHash(), dm)
-			if err != nil {
-				log.Printf("Failed to connect to peer %s: %v", peerStr, err)
-			}
-		}(p)
-	}
 }
 
-func downloadFromPeer(peer string, id, infohash metainfo.Hash, dm *downloadManager) error {
-	// Create I2P connection first
-	log.Printf("Initiating I2P connection to peer: %s", peer)
-	conn, err := dialI2P("tcp", peer)
-	if err != nil {
-		return fmt.Errorf("failed to establish I2P connection: %v", err)
-	}
-
-	// Create peer connection using the established I2P connection
-	pc := pp.NewPeerConn(conn, id, infohash)
-	defer pc.Close()
-
-	// Set connection parameters
-	pc.MaxLength = 256 * 1024 // 256KB
-	pc.Timeout = time.Second * 30
-
-	// Enable extended protocol and metadata exchange
-	pc.ExtBits.Set(pp.ExtensionBitExtended)
-
-	// Perform handshake
-	log.Printf("Performing BitTorrent handshake...")
-	if err := pc.Handshake(); err != nil {
-		return fmt.Errorf("handshake failed: %v", err)
-	}
-	log.Printf("Connected to peer %s (ID: %s)", peer, pc.PeerID.HexString())
-
-	// Create download handler
-	handler := createDownloadHandler(dm)
-
-	// Send interested message to start receiving pieces
-	log.Printf("Sending interested message...")
-	if err := pc.SetInterested(); err != nil {
-		return fmt.Errorf("failed to send interested: %v", err)
-	}
-
-	// Main download loop
-	log.Printf("Starting download loop...")
-	for !dm.IsFinished() {
-		msg, err := pc.ReadMsg()
-		if err != nil {
-			if err == io.EOF {
-				return fmt.Errorf("peer connection closed")
-			}
-			return fmt.Errorf("failed to read message: %v", err)
-		}
-
-		err = pc.HandleMessage(msg, handler)
-		if err == pp.ErrChoked {
-			log.Printf("Peer has choked us, waiting...")
-			time.Sleep(time.Second) // Wait a bit before retrying
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("failed to handle message: %v", err)
-		}
-
-		// Request more pieces if not currently downloading
-		if !dm.doing && !pc.PeerChoked {
-			err = requestNextBlock(pc, dm)
-			if err != nil {
-				// If this piece isn't available, try the next one
-				if strings.Contains(err.Error(), "piece not available") {
-					dm.pindex++
-					dm.poffset = 0
-					continue
-				}
-				return fmt.Errorf("failed to request block: %v", err)
-			}
-		}
-
-		// Print progress periodically
-		if dm.downloaded > 0 {
-			progress := float64(dm.downloaded) / float64(dm.writer.Info().TotalLength()) * 100
-			fmt.Printf("\rProgress: %.2f%% - Downloaded: %d bytes, Left: %d bytes",
-				progress, dm.downloaded, dm.left)
-		}
-	}
-
-	fmt.Printf("\nDownload completed! Total downloaded: %d bytes\n", dm.downloaded)
-	return nil
-}
 func createDownloadHandler(dm *downloadManager) pp.Handler {
 	return &downloadHandler{
 		NoopHandler: pp.NoopHandler{},
