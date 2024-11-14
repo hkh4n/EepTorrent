@@ -257,6 +257,32 @@ func urlEncodeBytes(b []byte) string {
 	}
 	return buf.String()
 }
+func checkPostmanTrackerResponse(response string) error {
+	// Check for specific error conditions
+	if strings.Contains(response, "Request denied!") {
+		return fmt.Errorf("tracker request denied: blocked request")
+	}
+
+	// Check for HTML response when we expected bencode
+	if strings.Contains(response, "<!DOCTYPE html>") ||
+		strings.Contains(response, "<html>") {
+		// Extract title if present
+		titleStart := strings.Index(response, "<title>")
+		titleEnd := strings.Index(response, "</title>")
+		if titleStart != -1 && titleEnd != -1 {
+			title := response[titleStart+7 : titleEnd]
+			return fmt.Errorf("received HTML response instead of bencode: %s", title)
+		}
+		return fmt.Errorf("received HTML response instead of bencode")
+	}
+
+	// Check if response starts with 'd' (valid bencoded dict)
+	if !strings.HasPrefix(strings.TrimSpace(response), "d") {
+		return fmt.Errorf("invalid tracker response format: expected bencoded dictionary")
+	}
+
+	return nil
+}
 
 func main() {
 	//http://tracker2.postman.i2p/announce.php
@@ -289,21 +315,23 @@ func main() {
 		panic(err)
 	}
 	sessionName := fmt.Sprintf("postman-tracker-%d", os.Getpid())
-	rawStream, err := rawSAM.NewPrimarySession(sessionName, rawKeys, sam3.Options_Default)
+	//rawStream, err := rawSAM.NewPrimarySession(sessionName, rawKeys, sam3.Options_Default)
+	rawStream, err := rawSAM.NewPrimarySessionWithSignature(sessionName, rawKeys, sam3.Options_Default, strconv.Itoa(7))
 	defer rawStream.Close()
 
-	postmanAddr, err := rawSAM.Lookup("tracker2.postman.i2p")
+	//postmanAddr, err := rawSAM.Lookup("tracker2.postman.i2p")
+	postmanAddr, err := rawSAM.Lookup("wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p")
 	if err != nil {
 		panic(err)
 	}
 
 	//create url string
 	//ihEnc := "73D3CA92B5C927D2845D4A3BF67871EC866F11FA"
-	ihEnc := percentEncode(mi.InfoHash().Bytes())
+	ihEnc := mi.InfoHash().Bytes()
 	//ihEnc := mi.InfoHash().String()
-	pidEnc := percentEncode([]byte(generatePeerId()))
+	pidEnc := generatePeerId()
 	query := url.Values{}
-	query.Set("info_hash", ihEnc)
+	query.Set("info_hash", string(ihEnc))
 	query.Set("peer_id", pidEnc)
 	query.Set("port", strconv.Itoa(6881))
 	query.Set("uploaded", "0")
@@ -315,7 +343,7 @@ func main() {
 	//query.Set("ip", urlEncodeBytes([]byte(rawKeys.Addr().Base64())))
 	query.Set("ip", destination)
 	query.Set("event", "started")
-	announcePath := fmt.Sprintf("/announce.php?%s", query.Encode())
+	announcePath := fmt.Sprintf("/a?%s", query.Encode())
 	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EXPERIMENTAL-SOFTWARE/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, postmanAddr.Base32())
 	fmt.Printf("BEGIN HTTP REQUEST\n%s\nEND HTTP REQUEST\n", httpRequest)
 	conn, err := rawStream.Dial("tcp", postmanAddr.String())
@@ -344,13 +372,21 @@ func main() {
 	fmt.Println(response)
 
 	// Check if response contains HTML
-	if strings.Contains(response, "<!DOCTYPE html>") {
-		err = os.WriteFile("tracker_response.html", responseBuffer.Bytes(), 0644)
-		if err != nil {
-			panic(err)
+	/*
+		if err := checkPostmanTrackerResponse(response); err != nil {
+			log.Printf("Tracker error: %v", err)
+			// Maybe save the HTML for debugging
+			if strings.Contains(response, "<!DOCTYPE html>") {
+				err = os.WriteFile("tracker_error.html", responseBuffer.Bytes(), 0644)
+				if err != nil {
+					log.Printf("Failed to save error HTML: %v", err)
+				}
+			}
+			// Handle the error appropriately
+			return // or handle error as needed
 		}
-		fmt.Println("HTML response written to tracker_response.html")
-	}
+
+	*/
 	os.Exit(0)
 	//END RAW
 	//
