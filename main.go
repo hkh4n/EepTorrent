@@ -308,7 +308,7 @@ func main() {
 	query.Set("port", strconv.Itoa(6881))
 	query.Set("uploaded", "0")
 	query.Set("downloaded", "0")
-	query.Set("left", "0")
+	query.Set("left", "65536")
 	query.Set("compact", "0")
 	destination := urlEncodeBytes([]byte(rawKeys.Addr().Base64()))
 	destination += ".i2p"
