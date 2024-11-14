@@ -15,13 +15,18 @@ BUILD_DIR=bin
 MAIN=main.go
 
 # Targets
-.PHONY: all build build-linux-arm clean test run install uninstall
+.PHONY: all build build-linux-amd64 clean test run install uninstall
 
 all: test build
 
 build:
 	mkdir -p $(BUILD_DIR)
 	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) -v $(MAIN)
+
+build-linux-amd64:
+	mkdir -p $(BUILD_DIR)
+	GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 -v $(MAIN)
+
 
 clean:
 	$(GOCLEAN)

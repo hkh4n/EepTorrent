@@ -40,10 +40,6 @@ cpfrxck5c4stxqrrjsp5syqvhfbtmc2jebyiyuv4hwjnhbxopuyq.b32.i2p
 cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
 
 */
-// Override the default Dial function to use I2P
-func init() {
-
-}
 
 // Global SAM client for I2P connections
 var sam *sam3.SAM
@@ -215,25 +211,28 @@ func announceOverI2P(infohash, peerId metainfo.Hash, destination string, tracker
 	return peerList, nil
 }
 func init() {
+	/*
 
-	sam, err := sam3.NewSAM("127.0.0.1:7656")
-	if err != nil {
-		panic(err)
-	}
+		sam, err := sam3.NewSAM("127.0.0.1:7656")
+		if err != nil {
+			panic(err)
+		}
 
-	// Generate the keys
-	keys, err := sam.NewKeys()
-	if err != nil {
-		panic(err)
-	}
-	localKeys = &keys
+		// Generate the keys
+		keys, err := sam.NewKeys()
+		if err != nil {
+			panic(err)
+		}
+		localKeys = &keys
 
-	stream, err = sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
-	if err != nil {
-		panic(err)
-	}
+		stream, err = sam.NewStreamSession("BT-"+time.Now().String(), keys, sam3.Options_Small)
+		if err != nil {
+			panic(err)
+		}
 
-	pp.Dial = dialI2P
+		pp.Dial = dialI2P
+
+	*/
 
 }
 func generatePeerId() string {
@@ -252,7 +251,6 @@ func generatePeerId() string {
 func main() {
 	//http://tracker2.postman.i2p/announce.php
 	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
-
 	// Load the torrent file
 	mi, err := metainfo.LoadFromFile("torrent-i2pify+script.torrent")
 	if err != nil {
@@ -269,6 +267,69 @@ func main() {
 	fmt.Printf("Total size: %d bytes\n", info.TotalLength())
 	fmt.Printf("Piece length: %d bytes\n", info.PieceLength)
 	fmt.Printf("Pieces: %d\n", len(info.Pieces))
+
+	//BEGIN RAW
+	rawSAM, err := sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		panic(err)
+	}
+	defer rawSAM.Close()
+	rawKeys, err := rawSAM.NewKeys()
+	if err != nil {
+		panic(err)
+	}
+	sessionName := fmt.Sprintf("postman-tracker-%d", os.Getpid())
+	rawStream, err := rawSAM.NewPrimarySession(sessionName, rawKeys, sam3.Options_Default)
+	defer rawStream.Close()
+
+	postmanAddr, err := rawSAM.Lookup("tracker2.postman.i2p")
+	if err != nil {
+		panic(err)
+	}
+
+	//create url string
+	ihEnc := urlEncodeBytes(mi.InfoHash().Bytes())
+	pidEnc := "PEER_ID"
+	query := url.Values{}
+	query.Set("info_hash", ihEnc)
+	query.Set("peer_id", pidEnc)
+	query.Set("port", strconv.Itoa(6881))
+	query.Set("uploaded", "0")
+	query.Set("downloaded", "0")
+	query.Set("left", "0")
+	query.Set("compact", "0")
+	query.Set("ip", urlEncodeBytes([]byte(rawKeys.Addr().Base64())))
+	query.Set("event", "started")
+	announcePath := fmt.Sprintf("/announce.php?%s", query.Encode())
+	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EepTorrent/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, postmanAddr.Base32())
+	fmt.Printf("BEGIN HTTP REQUEST\n%s\nEND HTTP REQUEST\n", httpRequest)
+	conn, err := rawStream.Dial("tcp", postmanAddr.String())
+	if err != nil {
+		panic(err)
+	}
+	conn.Write([]byte(httpRequest))
+	buffer := make([]byte, 4096)
+	// Read the response
+	n, err := conn.Read(buffer)
+	if err != nil {
+		panic(err)
+	}
+	response := string(buffer[:n])
+	fmt.Println(response)
+	//END RAW
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
 
 	// Initialize download manager
 	dm := &downloadManager{
