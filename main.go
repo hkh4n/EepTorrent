@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -78,22 +79,6 @@ type downloadManager struct {
 	downloaded int64
 	uploaded   int64
 	left       int64
-}
-
-// Helper function to URL-encode binary data as per BitTorrent protocol
-func urlEncodeBytes(b []byte) string {
-	var buf strings.Builder
-	for _, c := range b {
-		if (c >= 'A' && c <= 'Z') ||
-			(c >= 'a' && c <= 'z') ||
-			(c >= '0' && c <= '9') ||
-			c == '-' || c == '_' || c == '.' || c == '~' {
-			buf.WriteByte(c)
-		} else {
-			buf.WriteString(fmt.Sprintf("%%%02X", c))
-		}
-	}
-	return buf.String()
 }
 
 // Announce to the tracker without using HTTP proxy
@@ -236,16 +221,41 @@ func init() {
 
 }
 func generatePeerId() string {
-	// First 8 bytes: Client identifier
-	// -GT0001- means "GoTorrent version 0001"
+	// Client identifier (8 bytes)
 	clientId := "-GT0001-"
 
 	// Generate 12 random bytes for uniqueness
-	random := make([]byte, 12)
-	rand.Read(random)
+	randomBytes := make([]byte, 12)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		log.Fatalf("Failed to generate peer ID: %v", err)
+	}
 
 	// Combine them into a 20-byte peer ID
-	return fmt.Sprintf("%s%x", clientId, random)
+	return clientId + string(randomBytes)
+}
+func percentEncode(data []byte) string {
+	var encoded strings.Builder
+	for _, b := range data {
+		encoded.WriteString(fmt.Sprintf("%%%02X", b))
+	}
+	return encoded.String()
+}
+
+// Helper function to URL-encode binary data as per BitTorrent protocol
+func urlEncodeBytes(b []byte) string {
+	var buf strings.Builder
+	for _, c := range b {
+		if (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' {
+			buf.WriteByte(c)
+		} else {
+			buf.WriteString(fmt.Sprintf("%%%02X", c))
+		}
+	}
+	return buf.String()
 }
 
 func main() {
@@ -288,8 +298,10 @@ func main() {
 	}
 
 	//create url string
-	ihEnc := urlEncodeBytes(mi.InfoHash().Bytes())
-	pidEnc := "PEER_ID"
+	//ihEnc := "73D3CA92B5C927D2845D4A3BF67871EC866F11FA"
+	ihEnc := percentEncode(mi.InfoHash().Bytes())
+	//ihEnc := mi.InfoHash().String()
+	pidEnc := percentEncode([]byte(generatePeerId()))
 	query := url.Values{}
 	query.Set("info_hash", ihEnc)
 	query.Set("peer_id", pidEnc)
@@ -304,21 +316,42 @@ func main() {
 	query.Set("ip", destination)
 	query.Set("event", "started")
 	announcePath := fmt.Sprintf("/announce.php?%s", query.Encode())
-	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EepTorrent/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, postmanAddr.Base32())
+	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EXPERIMENTAL-SOFTWARE/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, postmanAddr.Base32())
 	fmt.Printf("BEGIN HTTP REQUEST\n%s\nEND HTTP REQUEST\n", httpRequest)
 	conn, err := rawStream.Dial("tcp", postmanAddr.String())
 	if err != nil {
 		panic(err)
 	}
 	conn.Write([]byte(httpRequest))
-	buffer := make([]byte, 4096)
 	// Read the response
-	n, err := conn.Read(buffer)
-	if err != nil {
-		panic(err)
+	// Create a bytes.Buffer to store the complete response
+	var responseBuffer bytes.Buffer
+	buffer := make([]byte, 4096)
+
+	// Read until no more data or error
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+		responseBuffer.Write(buffer[:n])
 	}
-	response := string(buffer[:n])
+
+	response := responseBuffer.String()
 	fmt.Println(response)
+
+	// Check if response contains HTML
+	if strings.Contains(response, "<!DOCTYPE html>") {
+		err = os.WriteFile("tracker_response.html", responseBuffer.Bytes(), 0644)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("HTML response written to tracker_response.html")
+	}
+	os.Exit(0)
 	//END RAW
 	//
 	//
