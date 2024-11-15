@@ -327,17 +327,20 @@ func main() {
 			log.Printf("Handshake with peer %s failed: %v", peerB32Addr, err)
 			continue
 		} else {
-			fmt.Printf("Handshake successful wiht peer: %s\n", peerB32Addr)
+			fmt.Printf("Handshake successful with peer: %s\n", peerB32Addr)
 		}
 
 		err = peerStream.Close()
 		if err != nil {
 			panic(err)
 		}
-		err = peerSAM.Close()
-		if err != nil {
-			panic(err)
-		}
+		/*
+			err = peerSAM.Close()
+			if err != nil {
+				panic(err)
+			}
+
+		*/
 		err = peerConn.Close()
 		if err != nil {
 			panic(err)
