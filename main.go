@@ -39,6 +39,8 @@ cpfrxck5c4stxqrrjsp5syqvhfbtmc2jebyiyuv4hwjnhbxopuyq.b32.i2p
 cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
 
 */
+var globalSAM *sam3.SAM
+var globalStreamSession *sam3.StreamSession
 
 const BlockSize = 16384 // 16KB blocks
 
@@ -243,36 +245,40 @@ func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 }
 
 func connectToPeer(peerHash []byte, index int, mi *metainfo.MetaInfo, dm *downloadManager) {
-	fmt.Println("Generating resolver for peer")
-	peerSAM, err := sam3.NewSAM("127.0.0.1:7656")
-	if err != nil {
-		log.Fatalf("Failed to create SAM connection: %v", err)
-	}
-	//defer peerSAM.Close()
+	/*
+		fmt.Println("Generating resolver for peer")
+		peerSAM, err := sam3.NewSAM("127.0.0.1:7656")
+		if err != nil {
+			log.Fatalf("Failed to create SAM connection: %v", err)
+		}
+		//defer peerSAM.Close()
 
-	peerKeys, err := peerSAM.NewKeys()
-	if err != nil {
-		log.Fatalf("Failed to generate keys: %v", err)
-	}
+		peerKeys, err := peerSAM.NewKeys()
+		if err != nil {
+			log.Fatalf("Failed to generate keys: %v", err)
+		}
 
-	// Create unique session name for each peer
-	peerSessionName := fmt.Sprintf("peer-session-%d-%d", os.Getpid(), index)
-	peerStream, err := peerSAM.NewPrimarySession(
-		peerSessionName,
-		peerKeys,
-		sam3.Options_Default,
-	)
-	if err != nil {
-		log.Fatalf("Failed to create SAM session: %v", err)
-	}
-	defer peerStream.Close()
+		// Create unique session name for each peer
+		peerSessionName := fmt.Sprintf("peer-session-%d-%d", os.Getpid(), index)
+		peerStream, err := peerSAM.NewPrimarySession(
+			peerSessionName,
+			peerKeys,
+			sam3.Options_Default,
+		)
+		if err != nil {
+			log.Fatalf("Failed to create SAM session: %v", err)
+		}
+		defer peerStream.Close()
+
+	*/
+	peerStream := globalStreamSession
 
 	// Convert hash to Base32 address
 	peerHashBase32 := strings.ToLower(base32.StdEncoding.EncodeToString(peerHash))
 	peerB32Addr := cleanBase32Address(peerHashBase32)
 
 	// Lookup the peer's Destination
-	peerDest, err := peerSAM.Lookup(peerB32Addr)
+	peerDest, err := globalSAM.Lookup(peerB32Addr)
 	if err != nil {
 		log.Fatalf("Failed to lookup peer %s: %v", peerB32Addr, err)
 	} else {
@@ -372,6 +378,31 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
 }
 
 func main() {
+	//init global sam
+	var err error
+	globalSAM, err = sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		log.Fatalf("Failed to create global SAM session: %v", err)
+	}
+	defer globalSAM.Close()
+
+	// Generate keys for the global session
+	globalKeys, err := globalSAM.NewKeys()
+	if err != nil {
+		log.Fatalf("failed to generate keys for global SAM session: %v", err)
+	}
+
+	globalSessionName := fmt.Sprintf("global-session-%d", os.Getpid())
+	globalStreamSession, err = globalSAM.NewStreamSessionWithSignature(
+		globalSessionName,
+		globalKeys,
+		sam3.Options_Default,
+		strconv.Itoa(7),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create global SAM stream session: %v", err)
+	}
+	defer globalStreamSession.Close()
 	//http://tracker2.postman.i2p/announce.php
 	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
 	// Load the torrent file
