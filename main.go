@@ -276,6 +276,7 @@ func main() {
 		peerHashes = append(peerHashes, peerHash)
 	}
 	for i, peerHash := range peerHashes {
+		fmt.Println("Generating new SAM for peer")
 		peerSAM, err := sam3.NewSAM("127.0.0.1:7656")
 		if err != nil {
 			log.Printf("Failed to create SAM connection: %v", err)
@@ -306,6 +307,8 @@ func main() {
 		if err != nil {
 			log.Printf("Failed to lookup peer %s: %v", peerB32Addr, err)
 			continue
+		} else {
+			fmt.Printf("Successfully looked up peer %s\n", peerB32Addr)
 		}
 
 		// Attempt to connect
@@ -313,6 +316,8 @@ func main() {
 		if err != nil {
 			log.Printf("Failed to connect to peer %s: %v", peerB32Addr, err)
 			continue
+		} else {
+			fmt.Printf("Successfully connected to peer %s\n", peerB32Addr)
 		}
 		//defer peerConn.Close()
 
@@ -321,6 +326,8 @@ func main() {
 		if err != nil {
 			log.Printf("Handshake with peer %s failed: %v", peerB32Addr, err)
 			continue
+		} else {
+			fmt.Printf("Handshake successful wiht peer: %s\n", peerB32Addr)
 		}
 
 		err = peerStream.Close()
