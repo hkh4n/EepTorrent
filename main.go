@@ -281,7 +281,7 @@ func main() {
 			log.Printf("Failed to create SAM connection: %v", err)
 			continue
 		}
-		defer peerSAM.Close()
+		//defer peerSAM.Close()
 		peerKeys, err := peerSAM.NewKeys()
 		if err != nil {
 			log.Printf("Failed to generate keys: %v", err)
@@ -289,13 +289,12 @@ func main() {
 		}
 		// Create unique session name for each peer
 		peerSessionName := fmt.Sprintf("peer-session-%d-%d", os.Getpid(), i)
-		peerStream, err := peerSAM.NewPrimarySessionWithSignature(
+		peerStream, err := peerSAM.NewPrimarySession(
 			peerSessionName,
 			peerKeys,
 			sam3.Options_Default,
-			strconv.Itoa(7),
 		)
-		defer peerStream.Close()
+		//defer peerStream.Close()
 
 		// Convert hash to Base32 address
 		peerHashBase32 := strings.ToLower(base32.StdEncoding.EncodeToString(peerHash))
@@ -315,13 +314,26 @@ func main() {
 			log.Printf("Failed to connect to peer %s: %v", peerB32Addr, err)
 			continue
 		}
-		defer peerConn.Close()
+		//defer peerConn.Close()
 
 		// Perform the BitTorrent handshake
 		err = performHandshake(peerConn, mi.InfoHash().Bytes(), generatePeerId())
 		if err != nil {
 			log.Printf("Handshake with peer %s failed: %v", peerB32Addr, err)
 			continue
+		}
+
+		err = peerStream.Close()
+		if err != nil {
+			panic(err)
+		}
+		err = peerSAM.Close()
+		if err != nil {
+			panic(err)
+		}
+		err = peerConn.Close()
+		if err != nil {
+			panic(err)
 		}
 
 		// Now you can exchange messages
