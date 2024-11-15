@@ -6,6 +6,8 @@ import (
 	"encoding/base32"
 	"fmt"
 	"net"
+	"sync"
+	"time"
 
 	//"github.com/eyedeekay/i2pkeys"
 	//"github.com/eyedeekay/sam3"
@@ -82,32 +84,7 @@ func urlEncodeBytes(b []byte) string {
 	}
 	return buf.String()
 }
-func checkPostmanTrackerResponse(response string) error {
-	// Check for specific error conditions
-	if strings.Contains(response, "Request denied!") {
-		return fmt.Errorf("tracker request denied: blocked request")
-	}
 
-	// Check for HTML response when we expected bencode
-	if strings.Contains(response, "<!DOCTYPE html>") ||
-		strings.Contains(response, "<html>") {
-		// Extract title if present
-		titleStart := strings.Index(response, "<title>")
-		titleEnd := strings.Index(response, "</title>")
-		if titleStart != -1 && titleEnd != -1 {
-			title := response[titleStart+7 : titleEnd]
-			return fmt.Errorf("received HTML response instead of bencode: %s", title)
-		}
-		return fmt.Errorf("received HTML response instead of bencode")
-	}
-
-	// Check if response starts with 'd' (valid bencoded dict)
-	if !strings.HasPrefix(strings.TrimSpace(response), "d") {
-		return fmt.Errorf("invalid tracker response format: expected bencoded dictionary")
-	}
-
-	return nil
-}
 func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	// Build the handshake message
 	pstr := "BitTorrent protocol"
@@ -156,6 +133,244 @@ func cleanBase32Address(addr string) string {
 	addr = strings.TrimRight(addr, "=")
 	return addr + ".b32.i2p"
 }
+func generatePeerIdMeta() metainfo.Hash {
+	var peerId metainfo.Hash
+	_, err := rand.Read(peerId[:])
+	if err != nil {
+		log.Fatalf("Failed to generate peer ID: %v", err)
+	}
+	return peerId
+}
+func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	sam, err := sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		return nil, err
+	}
+	//defer sam.Close()
+
+	keys, err := sam.NewKeys()
+	if err != nil {
+		return nil, err
+	}
+	sessionName := fmt.Sprintf("getpeers-%d", os.Getpid())
+	stream, err := sam.NewPrimarySessionWithSignature(sessionName, keys, sam3.Options_Default, strconv.Itoa(7))
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	simpAddr, err := sam.Lookup("wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p")
+	if err != nil {
+		return nil, err
+	}
+
+	// Create URL string
+	ihEnc := mi.InfoHash().Bytes()
+	pidEnc := generatePeerId()
+	query := url.Values{}
+	query.Set("info_hash", string(ihEnc))
+	query.Set("peer_id", pidEnc)
+	query.Set("port", strconv.Itoa(6881))
+	query.Set("uploaded", "0")
+	query.Set("downloaded", "0")
+	query.Set("left", "65536")
+	query.Set("compact", "0")
+	destination := urlEncodeBytes([]byte(keys.Addr().Base64()))
+	destination += ".i2p"
+	query.Set("ip", destination)
+	query.Set("event", "started")
+	announcePath := fmt.Sprintf("/a?%s", query.Encode())
+	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EXPERIMENTAL-SOFTWARE/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, simpAddr.Base32())
+	fmt.Printf("BEGIN HTTP REQUEST\n%s\nEND HTTP REQUEST\n", httpRequest)
+	conn, err := stream.Dial("tcp", simpAddr.String())
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	// Send the HTTP request
+	_, err = conn.Write([]byte(httpRequest))
+	var responseBuffer bytes.Buffer
+	buffer := make([]byte, 4096)
+
+	// Read until no more data or error
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+		responseBuffer.Write(buffer[:n])
+	}
+	response := responseBuffer.String()
+	fmt.Println(response)
+	headerEnd := strings.Index(response, "\r\n\r\n")
+	if headerEnd == -1 {
+		return nil, fmt.Errorf("Invalid HTTP response: no header-body separator found")
+	}
+	body := response[headerEnd+4:]
+	var trackerResp map[string]interface{}
+	err = bencode.DecodeBytes([]byte(body), &trackerResp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse tracker response: %v", err)
+	}
+	// Extract 'peers' key
+	peersValue, ok := trackerResp["peers"]
+	if !ok {
+		return nil, fmt.Errorf("No 'peers' key in tracker response")
+	}
+
+	// Handle compact peers
+	peersStr, ok := peersValue.(string)
+	if !ok {
+		return nil, fmt.Errorf("'peers' is not a string")
+	}
+
+	peersBytes := []byte(peersStr)
+
+	if len(peersBytes)%32 != 0 {
+		return nil, fmt.Errorf("Peers string length is not a multiple of 32")
+	}
+
+	peerHashes := [][]byte{}
+	for i := 0; i < len(peersBytes); i += 32 {
+		peerHash := peersBytes[i : i+32]
+		peerHashes = append(peerHashes, peerHash)
+	}
+	return peerHashes, nil
+}
+
+func connectToPeer(peerHash []byte, index int, mi *metainfo.MetaInfo, dm *downloadManager) {
+	fmt.Println("Generating resolver for peer")
+	peerSAM, err := sam3.NewSAM("127.0.0.1:7656")
+	if err != nil {
+		log.Fatalf("Failed to create SAM connection: %v", err)
+	}
+	//defer peerSAM.Close()
+
+	peerKeys, err := peerSAM.NewKeys()
+	if err != nil {
+		log.Fatalf("Failed to generate keys: %v", err)
+	}
+
+	// Create unique session name for each peer
+	peerSessionName := fmt.Sprintf("peer-session-%d-%d", os.Getpid(), index)
+	peerStream, err := peerSAM.NewPrimarySession(
+		peerSessionName,
+		peerKeys,
+		sam3.Options_Default,
+	)
+	if err != nil {
+		log.Fatalf("Failed to create SAM session: %v", err)
+	}
+	defer peerStream.Close()
+
+	// Convert hash to Base32 address
+	peerHashBase32 := strings.ToLower(base32.StdEncoding.EncodeToString(peerHash))
+	peerB32Addr := cleanBase32Address(peerHashBase32)
+
+	// Lookup the peer's Destination
+	peerDest, err := peerSAM.Lookup(peerB32Addr)
+	if err != nil {
+		log.Fatalf("Failed to lookup peer %s: %v", peerB32Addr, err)
+	} else {
+		log.Printf("Successfully looked up peer %s\n", peerB32Addr)
+	}
+
+	// Attempt to connect
+	peerConn, err := peerStream.Dial("tcp", peerDest.String())
+	if err != nil {
+		log.Fatalf("Failed to connect to peer %s: %v", peerB32Addr, err)
+		return
+	} else {
+		fmt.Printf("Successfully connected to peer %s\n", peerB32Addr)
+	}
+	defer peerConn.Close()
+
+	// Perform the BitTorrent handshake
+	peerId := generatePeerIdMeta()
+	err = performHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
+	if err != nil {
+		log.Fatalf("Handshake with peer %s failed: %v", peerB32Addr, err)
+	} else {
+		fmt.Printf("Handshake successful with peer: %s\n", peerB32Addr)
+	}
+
+	// Wrap the connection with pp.PeerConn
+	pc := pp.NewPeerConn(peerConn, peerId, mi.InfoHash())
+	pc.Timeout = 120 * time.Second
+
+	// Start the message handling loop
+	err = handlePeerConnection(pc, dm)
+	if err != nil {
+		log.Printf("Peer connection error: %v", err)
+	}
+}
+func handlePeerConnection(pc *pp.PeerConn, dm *downloadManager) error {
+	defer pc.Close()
+
+	// Send BitField if needed
+	err := pc.SendBitfield(dm.bitfield)
+	if err != nil {
+		return fmt.Errorf("Failed to send Bitfield: %v", err)
+	}
+
+	for {
+		msg, err := pc.ReadMsg()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+
+		err = handleMessage(pc, msg, dm)
+		if err != nil {
+			return err
+		}
+	}
+}
+func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
+	switch msg.Type {
+	case pp.MTypeBitField:
+		pc.BitField = msg.BitField
+		// Send interested message if the peer has pieces we need
+		if dm.needPiecesFrom(pc) {
+			err := pc.SendInterested()
+			if err != nil {
+				log.Printf("Failed to send Interested message: %v", err)
+				return err
+			}
+		}
+	case pp.MTypeHave:
+		pc.BitField.Set(msg.Index)
+		// Send interested message if the peer has pieces we need
+		if dm.needPiecesFrom(pc) {
+			err := pc.SendInterested()
+			if err != nil {
+				log.Printf("Failed to send Interested message: %v", err)
+				return err
+			}
+		}
+	case pp.MTypeUnchoke:
+		// Start requesting pieces
+		return requestNextBlock(pc, dm)
+	case pp.MTypePiece:
+		err := dm.OnBlock(msg.Index, msg.Begin, msg.Piece)
+		if err != nil {
+			log.Printf("Error handling piece: %v", err)
+			return err
+		}
+		// Request next block
+		return requestNextBlock(pc, dm)
+	default:
+		// Handle other message types if necessary
+	}
+	return nil
+}
+
 func main() {
 	//http://tracker2.postman.i2p/announce.php
 	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
@@ -176,6 +391,52 @@ func main() {
 	fmt.Printf("Piece length: %d bytes\n", info.PieceLength)
 	fmt.Printf("Pieces: %d\n", len(info.Pieces))
 
+	// Initialize the file writer
+	outputFile := info.Name
+	mode := os.FileMode(0644)
+	file, err := os.Create(outputFile)
+	if err != nil {
+		log.Fatalf("Failed to create output file: %v", err)
+	}
+	defer file.Close()
+
+	writer := metainfo.NewWriter(outputFile, info, mode)
+
+	// Init downloadManager
+	dm := &downloadManager{
+		writer:   writer, // Assign the value, not a pointer
+		bitfield: pp.NewBitField(len(info.Pieces)),
+		left:     info.TotalLength(),
+	}
+
+	// Obtain peers from the tracker
+	peers, err := getPeersFromSimpTracker(&mi)
+	if err != nil {
+		log.Fatalf("Failed to get peers from tracker: %v", err)
+	}
+
+	// Use a WaitGroup to wait for all peer connections to finish
+	var wg sync.WaitGroup
+
+	// Connect to peers
+	for i, peerHash := range peers {
+		wg.Add(1)
+		go func(peerHash []byte, index int) {
+			defer wg.Done()
+			connectToPeer(peerHash, index, &mi, dm)
+		}(peerHash, i)
+	}
+
+	// Wait until all peer connections are done
+	wg.Wait()
+
+	// Check if the download is complete
+	if dm.IsFinished() {
+		fmt.Println("Download complete")
+	} else {
+		fmt.Println("Download incomplete")
+	}
+	os.Exit(0)
 	//BEGIN RAW
 	rawSAM, err := sam3.NewSAM("127.0.0.1:7656")
 	if err != nil {
@@ -417,41 +678,84 @@ func (h *downloadHandler) OnMessage(pc *pp.PeerConn, msg pp.Message) error {
 	}
 }
 
-func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
-	if dm.plength <= 0 {
-		dm.pindex++
-		if dm.IsFinished() {
+/*
+	func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
+		if dm.plength <= 0 {
+			dm.pindex++
+			if dm.IsFinished() {
+				return nil
+			}
+
+			dm.poffset = 0
+			dm.plength = dm.writer.Info().Piece(int(dm.pindex)).Length()
+		}
+
+		// Check if peer has the piece
+		if !pc.BitField.IsSet(dm.pindex) {
+			// Try next piece
+			dm.pindex++
+			dm.poffset = 0
 			return nil
 		}
 
-		dm.poffset = 0
-		dm.plength = dm.writer.Info().Piece(int(dm.pindex)).Length()
-	}
+		// Calculate block size
+		length := uint32(BlockSize)
+		if length > uint32(dm.plength) {
+			length = uint32(dm.plength)
+		}
 
-	// Check if peer has the piece
-	if !pc.BitField.IsSet(dm.pindex) {
-		// Try next piece
-		dm.pindex++
-		dm.poffset = 0
-		return nil
+		// Request the block
+		err := pc.SendRequest(dm.pindex, dm.poffset, length)
+		if err == nil {
+			dm.doing = true
+			fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
+				dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
+		}
+		return err
 	}
+*/
+func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
+	for !dm.IsFinished() {
+		if dm.plength <= 0 {
+			dm.pindex++
+			if dm.IsFinished() {
+				return nil
+			}
 
-	// Calculate block size
-	length := uint32(BlockSize)
-	if length > uint32(dm.plength) {
-		length = uint32(dm.plength)
-	}
+			dm.poffset = 0
+			// Adjusted to use dm.writer.Info()
+			pieceLength := dm.writer.Info().Piece(int(dm.pindex)).Length()
+			dm.plength = pieceLength
+		}
 
-	// Request the block
-	err := pc.SendRequest(dm.pindex, dm.poffset, length)
-	if err == nil {
-		dm.doing = true
-		fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
-			dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
+		// Check if peer has the piece
+		if !pc.BitField.IsSet(uint32(int(dm.pindex))) {
+			// Try next piece
+			dm.pindex++
+			dm.poffset = 0
+			continue
+		}
+
+		// Calculate block size
+		length := uint32(BlockSize)
+		if length > uint32(dm.plength) {
+			length = uint32(dm.plength)
+		}
+
+		// Request the block
+		err := pc.SendRequest(dm.pindex, dm.poffset, length)
+		if err == nil {
+			dm.doing = true
+			fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
+				dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
+			return nil
+		} else {
+			log.Printf("Failed to send request: %v", err)
+			return err
+		}
 	}
-	return err
+	return nil
 }
-
 func (dm *downloadManager) IsFinished() bool {
 	return dm.pindex >= uint32(dm.writer.Info().CountPieces())
 }
@@ -481,7 +785,14 @@ func (dm *downloadManager) OnBlock(index, offset uint32, b []byte) error {
 	}
 	return err
 }
-
+func (dm *downloadManager) needPiecesFrom(pc *pp.PeerConn) bool {
+	for i := 0; i < dm.writer.Info().CountPieces(); i++ {
+		if !dm.bitfield.IsSet(uint32(i)) && pc.BitField.IsSet(uint32(i)) {
+			return true
+		}
+	}
+	return false
+}
 func example_postman_request() {
 	fmt.Println("Generating new SAM")
 	_sam, err := sam3.NewSAM("127.0.0.1:7656")
@@ -616,4 +927,30 @@ func example_simp_request() {
 
 	response := responseBuffer.String()
 	fmt.Println(response)
+}
+func checkPostmanTrackerResponse(response string) error {
+	// Check for specific error conditions
+	if strings.Contains(response, "Request denied!") {
+		return fmt.Errorf("tracker request denied: blocked request")
+	}
+
+	// Check for HTML response when we expected bencode
+	if strings.Contains(response, "<!DOCTYPE html>") ||
+		strings.Contains(response, "<html>") {
+		// Extract title if present
+		titleStart := strings.Index(response, "<title>")
+		titleEnd := strings.Index(response, "</title>")
+		if titleStart != -1 && titleEnd != -1 {
+			title := response[titleStart+7 : titleEnd]
+			return fmt.Errorf("received HTML response instead of bencode: %s", title)
+		}
+		return fmt.Errorf("received HTML response instead of bencode")
+	}
+
+	// Check if response starts with 'd' (valid bencoded dict)
+	if !strings.HasPrefix(strings.TrimSpace(response), "d") {
+		return fmt.Errorf("invalid tracker response format: expected bencoded dictionary")
+	}
+
+	return nil
 }
