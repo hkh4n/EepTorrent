@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"net"
 	"sync"
 	"time"
@@ -16,12 +17,22 @@ import (
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/go-i2p/sam3"
 	"io"
-	"log"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 )
+
+var log = logrus.New()
+
+func init() {
+	// Configure logrus
+	log.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		DisableColors: false,
+	})
+	log.SetLevel(logrus.DebugLevel)
+}
 
 /* //Trackers
 String convertedurl = url.replace("ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p", "tracker2.postman.i2p")
@@ -45,15 +56,16 @@ var globalStreamSession *sam3.StreamSession
 const BlockSize = 16384 // 16KB blocks
 
 type downloadManager struct {
-	writer     metainfo.Writer
-	pindex     uint32
-	poffset    uint32
-	plength    int64
-	doing      bool
-	bitfield   pp.BitField
-	downloaded int64
-	uploaded   int64
-	left       int64
+	writer         metainfo.Writer
+	pindex         uint32
+	poffset        uint32
+	plength        int64
+	doing          bool
+	bitfield       pp.BitField
+	downloaded     int64
+	uploaded       int64
+	left           int64
+	requestPending bool
 }
 
 func generatePeerId() string {
@@ -88,6 +100,10 @@ func urlEncodeBytes(b []byte) string {
 }
 
 func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
+	log.WithFields(logrus.Fields{
+		"peer_id":   peerId,
+		"info_hash": fmt.Sprintf("%x", infoHash),
+	}).Debug("Starting handshake with peer")
 	// Build the handshake message
 	pstr := "BitTorrent protocol"
 	pstrlen := byte(len(pstr))
@@ -102,6 +118,7 @@ func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	// Send handshake
 	_, err := conn.Write(handshake)
 	if err != nil {
+		log.WithError(err).Error("Failed to send handshake")
 		return fmt.Errorf("failed to send handshake: %v", err)
 	}
 
@@ -109,25 +126,37 @@ func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	response := make([]byte, 68)
 	_, err = io.ReadFull(conn, response)
 	if err != nil {
+		log.WithError(err).Error("Failed to read handshake response")
 		return fmt.Errorf("failed to read handshake: %v", err)
 	}
 
+	log.Debug("Successfully received handshake response")
+
 	// Validate response
 	if response[0] != pstrlen {
+		log.WithFields(logrus.Fields{
+			"expected": pstrlen,
+			"got":      response[0],
+		}).Error("Invalid pstrlen in handshake")
 		return fmt.Errorf("invalid pstrlen in handshake")
 	}
 	if string(response[1:1+len(pstr)]) != pstr {
+		log.Error("Invalid protocol string in handshake")
 		return fmt.Errorf("invalid protocol string in handshake")
 	}
 	// Optionally check reserved bytes
 	// Extract info_hash and peer_id from response
 	receivedInfoHash := response[1+len(pstr)+8 : 1+len(pstr)+8+20]
 	if !bytes.Equal(receivedInfoHash, infoHash) {
+		log.WithFields(logrus.Fields{
+			"expected": fmt.Sprintf("%x", infoHash),
+			"got":      fmt.Sprintf("%x", receivedInfoHash),
+		}).Error("Info hash mismatch")
 		return fmt.Errorf("info_hash does not match")
 	}
 	// Peer ID can be extracted if needed
 	// receivedPeerId := response[1+len(pstr)+8+20:]
-
+	log.Debug("Handshake completed successfully")
 	return nil
 }
 func cleanBase32Address(addr string) string {
@@ -144,6 +173,7 @@ func generatePeerIdMeta() metainfo.Hash {
 	return peerId
 }
 func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Info("Getting peers from simp tracker")
 	sam, err := sam3.NewSAM("127.0.0.1:7656")
 	if err != nil {
 		return nil, err
@@ -169,6 +199,12 @@ func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	// Create URL string
 	ihEnc := mi.InfoHash().Bytes()
 	pidEnc := generatePeerId()
+
+	log.WithFields(logrus.Fields{
+		"info_hash": fmt.Sprintf("%x", ihEnc),
+		"peer_id":   pidEnc,
+	}).Debug("Preparing tracker request")
+
 	query := url.Values{}
 	query.Set("info_hash", string(ihEnc))
 	query.Set("peer_id", pidEnc)
@@ -183,15 +219,22 @@ func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	query.Set("event", "started")
 	announcePath := fmt.Sprintf("/a?%s", query.Encode())
 	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: EXPERIMENTAL-SOFTWARE/0.0.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, simpAddr.Base32())
-	fmt.Printf("BEGIN HTTP REQUEST\n%s\nEND HTTP REQUEST\n", httpRequest)
+
+	log.WithField("request", httpRequest).Debug("Sending tracker request")
+
 	conn, err := stream.Dial("tcp", simpAddr.String())
 	if err != nil {
+		log.WithError(err).Error("Failed to connect to tracker")
 		return nil, err
 	}
 	defer conn.Close()
 
 	// Send the HTTP request
 	_, err = conn.Write([]byte(httpRequest))
+	if err != nil {
+		log.WithError(err).Error("Failed to send request to tracker")
+		return nil, err
+	}
 	var responseBuffer bytes.Buffer
 	buffer := make([]byte, 4096)
 
@@ -202,37 +245,43 @@ func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 			if err == io.EOF {
 				break
 			}
-			panic(err)
+			log.WithError(err).Error("Error reading tracker response")
+			return nil, err
 		}
 		responseBuffer.Write(buffer[:n])
 	}
 	response := responseBuffer.String()
-	fmt.Println(response)
+	log.WithField("response", response).Debug("Received tracker response")
 	headerEnd := strings.Index(response, "\r\n\r\n")
 	if headerEnd == -1 {
+		log.Error("Invalid HTTP response: no header-body separator found")
 		return nil, fmt.Errorf("Invalid HTTP response: no header-body separator found")
 	}
 	body := response[headerEnd+4:]
 	var trackerResp map[string]interface{}
 	err = bencode.DecodeBytes([]byte(body), &trackerResp)
 	if err != nil {
+		log.WithError(err).Error("Failed to parse tracker response")
 		return nil, fmt.Errorf("Failed to parse tracker response: %v", err)
 	}
 	// Extract 'peers' key
 	peersValue, ok := trackerResp["peers"]
 	if !ok {
+		log.Error("No 'peers' key in tracker response")
 		return nil, fmt.Errorf("No 'peers' key in tracker response")
 	}
 
 	// Handle compact peers
 	peersStr, ok := peersValue.(string)
 	if !ok {
+		log.Error("'peers' is not a string")
 		return nil, fmt.Errorf("'peers' is not a string")
 	}
 
 	peersBytes := []byte(peersStr)
 
 	if len(peersBytes)%32 != 0 {
+		log.WithField("length", len(peersBytes)).Error("Peers string length is not a multiple of 32")
 		return nil, fmt.Errorf("Peers string length is not a multiple of 32")
 	}
 
@@ -241,6 +290,7 @@ func getPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 		peerHash := peersBytes[i : i+32]
 		peerHashes = append(peerHashes, peerHash)
 	}
+	log.WithField("peer_count", len(peerHashes)).Info("Successfully retrieved peers from tracker")
 	return peerHashes, nil
 }
 
@@ -315,70 +365,114 @@ func connectToPeer(peerHash []byte, index int, mi *metainfo.MetaInfo, dm *downlo
 	}
 }
 func handlePeerConnection(pc *pp.PeerConn, dm *downloadManager) error {
+	//log.WithField("peer", pc.RemoteAddr().String()).Debug()
+	log := log.WithField("peer", pc.RemoteAddr().String())
 	defer pc.Close()
 
 	// Send BitField if needed
 	err := pc.SendBitfield(dm.bitfield)
 	if err != nil {
+		log.WithError(err).Error("Failed to send Bitfield")
 		return fmt.Errorf("Failed to send Bitfield: %v", err)
 	}
 
 	// Send Interested message
 	err = pc.SendInterested()
 	if err != nil {
+		log.WithError(err).Error("Failed to send Interested message")
 		return fmt.Errorf("Failed to send Interested message: %v", err)
 	}
+
+	log.Info("Successfully initiated peer connection")
 
 	for {
 		msg, err := pc.ReadMsg()
 		if err != nil {
 			if err == io.EOF {
+				log.Info("Peer connection closed")
 				return nil
 			}
+			log.WithError(err).Error("Error reading message from peer")
 			return err
 		}
 
+		log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
+
 		err = handleMessage(pc, msg, dm)
 		if err != nil {
+			log.WithError(err).Error("Error handling message from peer")
 			return err
 		}
 	}
 }
 func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
+	log := log.WithFields(logrus.Fields{
+		"peer":         pc.RemoteAddr().String(),
+		"message_type": msg.Type.String(),
+	})
+
+	log.Debug("Handling peer message")
+
 	switch msg.Type {
 	case pp.MTypeBitField:
+		log.WithField("bitfield_length", len(msg.BitField)).Debug("Received bitfield")
 		pc.BitField = msg.BitField
 		// Send interested message if the peer has pieces we need
 		if dm.needPiecesFrom(pc) {
+			log.Debug("Peer has needed pieces, sending interested message")
 			err := pc.SendInterested()
 			if err != nil {
-				log.Printf("Failed to send Interested message: %v", err)
+				log.WithError(err).Error("Failed to send Interested message")
+				//log.Printf("Failed to send Interested message: %v", err)
 				return err
 			}
+			log.Debug("Successfully sent interested message")
+		} else {
+			log.Debug("Peer has no needed pieces")
 		}
 	case pp.MTypeHave:
+		log.WithField("piece_index", msg.Index).Debug("Received have message")
 		pc.BitField.Set(msg.Index)
 		// Send interested message if the peer has pieces we need
 		if dm.needPiecesFrom(pc) {
+			log.Debug("Peer has needed pieces, sending interested message")
 			err := pc.SendInterested()
 			if err != nil {
-				log.Printf("Failed to send Interested message: %v", err)
+				log.WithError(err).Error("Failed to send Interested message")
 				return err
 			}
+			log.Debug("Successfully sent interested message")
+		} else {
+			log.Debug("Peer has no needed pieces")
 		}
 	case pp.MTypeUnchoke:
 		// Start requesting pieces
-		return requestNextBlock(pc, dm)
+		//log.Info("Peer has unchoked us, starting to request pieces")
+		//return requestNextBlock(pc, dm)
+		if !dm.requestPending {
+			log.Info("Peer has unchoked us, starting to request pieces")
+			return requestNextBlock(pc, dm)
+		} else {
+			log.Info("Already have a pending request, waiting for piece")
+		}
 	case pp.MTypePiece:
+		log.WithFields(logrus.Fields{
+			"piece_index": msg.Index,
+			"begin":       msg.Begin,
+			"length":      len(msg.Piece),
+		}).Debug("Received piece")
+
 		err := dm.OnBlock(msg.Index, msg.Begin, msg.Piece)
 		if err != nil {
-			log.Printf("Error handling piece: %v", err)
+			log.WithError(err).Error("Error handling piece")
 			return err
 		}
 		// Request next block
+		log.Debug("Successfully processed piece, requesting next block")
 		return requestNextBlock(pc, dm)
 	default:
 		// Handle other message types if necessary
+		log.WithField("message_type", msg.Type).Debug("Ignoring unhandled message type")
 	}
 	return nil
 }
@@ -550,10 +644,13 @@ func (h *downloadHandler) OnMessage(pc *pp.PeerConn, msg pp.Message) error {
 	}
 */
 func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
+	log := log.WithField("peer", pc.RemoteAddr().String())
+
 	for !dm.IsFinished() {
 		if dm.plength <= 0 {
 			dm.pindex++
 			if dm.IsFinished() {
+				log.Info("Download finished")
 				return nil
 			}
 
@@ -561,11 +658,13 @@ func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
 			// Adjusted to use dm.writer.Info()
 			pieceLength := dm.writer.Info().Piece(int(dm.pindex)).Length()
 			dm.plength = pieceLength
+			log.WithField("plength", dm.plength).Debug("Set dm.plength")
 		}
 
 		// Check if peer has the piece
 		if !pc.BitField.IsSet(uint32(int(dm.pindex))) {
 			// Try next piece
+			log.WithField("piece_index", dm.pindex).Debug("Peer doesn't have requested piece, trying next")
 			dm.pindex++
 			dm.poffset = 0
 			continue
@@ -573,19 +672,37 @@ func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
 
 		// Calculate block size
 		length := uint32(BlockSize)
-		if length > uint32(dm.plength) {
-			length = uint32(dm.plength)
+		// Adjust length to not exceed remaining data in the piece
+		if uint32(dm.plength)-dm.poffset < length {
+			length = uint32(dm.plength) - dm.poffset
 		}
+		/*
+			if length > uint32(dm.plength) {
+				length = uint32(dm.plength)
+			}
+		*/
+
+		log.WithFields(logrus.Fields{
+			"piece_index": dm.pindex,
+			"offset":      dm.poffset,
+			"length":      length,
+		}).Debug("Requesting block")
 
 		// Request the block
 		err := pc.SendRequest(dm.pindex, dm.poffset, length)
 		if err == nil {
 			dm.doing = true
-			fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
-				dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
+			//fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
+			//dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
+			log.WithFields(logrus.Fields{
+				"piece_index":  dm.pindex,
+				"total_pieces": dm.writer.Info().CountPieces(),
+				"offset":       dm.poffset,
+				"length":       length,
+			}).Info("Successfully requested block")
 			return nil
 		} else {
-			log.Printf("Failed to send request: %v", err)
+			log.WithError(err).Error("Failed to send request")
 			return err
 		}
 	}
@@ -596,6 +713,7 @@ func (dm *downloadManager) IsFinished() bool {
 }
 
 func (dm *downloadManager) OnBlock(index, offset uint32, b []byte) error {
+	dm.requestPending = false
 	if dm.pindex != index {
 		return fmt.Errorf("inconsistent piece: old=%d, new=%d", dm.pindex, index)
 	}
