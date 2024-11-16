@@ -5,8 +5,8 @@ go 1.23.2
 require (
 	fyne.io/fyne/v2 v2.5.2
 	github.com/go-i2p/go-i2p-bt v0.0.0-20241109165341-02c954c22874
-	github.com/go-i2p/i2pkeys v0.0.0-20241108200332-e4f5ccdff8c4
 	github.com/go-i2p/sam3 v0.33.9
+	github.com/sirupsen/logrus v1.9.3
 	gonum.org/v1/plot v0.15.0
 )
 
@@ -25,6 +25,7 @@ require (
 	github.com/go-fonts/liberation v0.3.3 // indirect
 	github.com/go-gl/gl v0.0.0-20211210172815-726fda9656d6 // indirect
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20240506104042-037f3cc74f2a // indirect
+	github.com/go-i2p/i2pkeys v0.0.0-20241108200332-e4f5ccdff8c4 // indirect
 	github.com/go-latex/latex v0.0.0-20240709081214-31cef3c7570e // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/go-text/render v0.2.0 // indirect
@@ -39,7 +40,6 @@ require (
 	github.com/nicksnyder/go-i18n/v2 v2.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rymdport/portal v0.2.6 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/testify v1.9.0 // indirect

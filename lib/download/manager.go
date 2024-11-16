@@ -117,6 +117,18 @@ func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 	return false
 }
 func (dm *DownloadManager) LogProgress() {
+	progress := dm.Progress()
+	log.WithFields(logrus.Fields{
+		"progress":         fmt.Sprintf("%.2f%%", progress),
+		"downloaded_bytes": dm.Downloaded,
+		"total_bytes":      dm.Writer.Info().TotalLength(),
+		"remaining_bytes":  dm.Left,
+		"current_piece":    dm.PIndex,
+		"current_offset":   dm.POffset,
+	}).Info("Download progress update")
+}
+
+func (dm *DownloadManager) Progress() float64 {
 	totalPieces := dm.Writer.Info().CountPieces()
 	completedPieces := 0
 	for i := 0; i < totalPieces; i++ {
@@ -124,15 +136,5 @@ func (dm *DownloadManager) LogProgress() {
 			completedPieces++
 		}
 	}
-
-	log.WithFields(logrus.Fields{
-		"completed_pieces": completedPieces,
-		"total_pieces":     totalPieces,
-		"progress":         fmt.Sprintf("%.2f%%", float64(completedPieces)/float64(totalPieces)*100),
-		"downloaded_bytes": dm.Downloaded,
-		"total_bytes":      dm.Writer.Info().TotalLength(),
-		"remaining_bytes":  dm.Left,
-		"current_piece":    dm.PIndex,
-		"current_offset":   dm.POffset,
-	}).Info("Download progress update")
+	return (float64(completedPieces) / float64(totalPieces)) * 100
 }

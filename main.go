@@ -1,11 +1,17 @@
 package main
 
 import (
+	"context"
 	"eeptorrent/lib/download"
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
 	"fmt"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 	"sync"
 	"time"
@@ -13,17 +19,6 @@ import (
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	"os"
 )
-
-var log = logrus.New()
-
-func init() {
-	// Configure logrus
-	log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-		DisableColors: false,
-	})
-	log.SetLevel(logrus.DebugLevel)
-}
 
 /* //Trackers
 String convertedurl = url.replace("ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p", "tracker2.postman.i2p")
@@ -41,104 +36,186 @@ cpfrxck5c4stxqrrjsp5syqvhfbtmc2jebyiyuv4hwjnhbxopuyq.b32.i2p
 cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
 
 */
+var log = logrus.New()
+
+func init() {
+	// Configure logrus
+	log.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		DisableColors: false,
+	})
+	log.SetLevel(logrus.DebugLevel)
+}
 
 func main() {
-	// init download stats
-	stats := download.NewDownloadStats()
+	// Initialize the Fyne application
+	myApp := app.New()
+	myWindow := myApp.NewWindow("EepTorrent")
 
-	//init sam
-	err := i2p.InitSAM()
-	if err != nil {
-		panic(err)
-	}
-	defer i2p.CloseSAM()
+	// Create UI components
+	progressBar := widget.NewProgressBar()
+	statusLabel := widget.NewLabel("Ready")
+	startButton := widget.NewButton("Start Download", nil)
+	stopButton := widget.NewButton("Stop Download", nil)
+	stopButton.Disable()
 
-	//http://tracker2.postman.i2p/announce.php
-	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
-	// Load the torrent file
-	//mi, err := metainfo.LoadFromFile("rarbg_db.zip.torrent")
-	mi, err := metainfo.LoadFromFile("torrent-i2pify+script.torrent")
-	if err != nil {
-		log.Fatalf("Failed to load torrent: %v", err)
-	}
+	// Layout the UI components
+	content := container.NewVBox(
+		progressBar,
+		statusLabel,
+		container.NewHBox(startButton, stopButton),
+	)
+	myWindow.SetContent(content)
+	myWindow.Resize(fyne.NewSize(400, 200))
 
-	info, err := mi.Info()
-	if err != nil {
-		log.Fatalf("Failed to parse torrent info: %v", err)
-	}
-
-	fmt.Printf("Downloading: %s\n", info.Name)
-	fmt.Printf("Info Hash: %s\n", mi.InfoHash().HexString())
-	fmt.Printf("Total size: %d bytes\n", info.TotalLength())
-	fmt.Printf("Piece length: %d bytes\n", info.PieceLength)
-	fmt.Printf("Pieces: %d\n", len(info.Pieces))
-
-	// Initialize the file writer
-	/*
-		outputFile := info.Name
-		mode := os.FileMode(0644)
-		file, err := os.Create(outputFile)
-		if err != nil {
-			log.Fatalf("Failed to create output file: %v", err)
-		}
-		defer file.Close()
-
-	*/
-	var outputPath string
-	var mode os.FileMode
-	if len(info.Files) == 0 {
-		// Single-file torrent
-		outputPath = info.Name
-		mode = 0644
-	} else {
-		// Multi-file torrent
-		outputPath = info.Name
-		mode = 0755
-		// Create the directory if it doesn't exist
-		err := os.MkdirAll(outputPath, mode)
-		if err != nil && !os.IsExist(err) {
-			log.Fatalf("Failed to create output directory: %v", err)
-		}
-	}
-
-	writer := metainfo.NewWriter(outputPath, info, mode)
-	dm := download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
-	progressTicker := time.NewTicker(5 * time.Second)
-	go func() {
-		for range progressTicker.C {
-			dm.LogProgress()
-		}
-	}()
-	defer progressTicker.Stop()
-
-	peers, err := tracker.GetPeersFromSimpTracker(&mi)
-	if err != nil {
-		log.Fatalf("Failed to get peers from tracker: %v", err)
-	}
+	// Variables to manage download state
+	var dm *download.DownloadManager
 	var wg sync.WaitGroup
+	var downloadInProgress bool
+	var downloadCancel context.CancelFunc
 
-	for i, peerHash := range peers {
-		wg.Add(1)
-		go func(peerHash []byte, index int) {
-			defer wg.Done()
-			stats.ConnectionStarted()
-			defer stats.ConnectionEnded()
-			peer.ConnectToPeer(peerHash, index, &mi, dm)
-		}(peerHash, i)
+	// Start button handler
+	startButton.OnTapped = func() {
+		if downloadInProgress {
+			return
+		}
+
+		// Open file dialog to select torrent file
+		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+			if err != nil || reader == nil {
+				return
+			}
+
+			torrentFilePath := reader.URI().Path()
+			reader.Close()
+
+			downloadInProgress = true
+			startButton.Disable()
+			stopButton.Enable()
+			statusLabel.SetText("Initializing download...")
+
+			// Run the download in a separate goroutine
+			go func() {
+				defer func() {
+					downloadInProgress = false
+					startButton.Enable()
+					stopButton.Disable()
+					statusLabel.SetText("Download completed")
+				}()
+
+				// Initialize download stats
+				stats := download.NewDownloadStats()
+
+				// Initialize SAM
+				err := i2p.InitSAM()
+				if err != nil {
+					showError("Failed to initialize SAM", err, myWindow)
+					return
+				}
+				defer i2p.CloseSAM()
+
+				// Load the torrent file
+				mi, err := metainfo.LoadFromFile(torrentFilePath)
+				if err != nil {
+					showError("Failed to load torrent", err, myWindow)
+					return
+				}
+
+				info, err := mi.Info()
+				if err != nil {
+					showError("Failed to parse torrent info", err, myWindow)
+					return
+				}
+
+				// Initialize the file writer
+				var outputPath string
+				var mode os.FileMode
+				if len(info.Files) == 0 {
+					// Single-file torrent
+					outputPath = info.Name
+					mode = 0644
+				} else {
+					// Multi-file torrent
+					outputPath = info.Name
+					mode = 0755
+					// Create the directory if it doesn't exist
+					err := os.MkdirAll(outputPath, mode)
+					if err != nil && !os.IsExist(err) {
+						showError("Failed to create output directory", err, myWindow)
+						return
+					}
+				}
+
+				writer := metainfo.NewWriter(outputPath, info, mode)
+				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
+				progressTicker := time.NewTicker(1 * time.Second)
+				ctx, cancel := context.WithCancel(context.Background())
+				downloadCancel = cancel
+
+				go func() {
+					for {
+						select {
+						case <-progressTicker.C:
+							dm.LogProgress()
+							progress := dm.Progress() / 100
+							progressBar.SetValue(progress)
+							statusLabel.SetText(fmt.Sprintf("Downloading: %.2f%%", dm.Progress()))
+						case <-ctx.Done():
+							progressTicker.Stop()
+							return
+						}
+					}
+				}()
+				defer progressTicker.Stop()
+
+				// Get peers from tracker
+				peers, err := tracker.GetPeersFromSimpTracker(&mi)
+				if err != nil {
+					showError("Failed to get peers from tracker", err, myWindow)
+					return
+				}
+
+				for i, peerHash := range peers {
+					wg.Add(1)
+					go func(peerHash []byte, index int) {
+						defer wg.Done()
+						stats.ConnectionStarted()
+						defer stats.ConnectionEnded()
+						peer.ConnectToPeer(peerHash, index, &mi, dm)
+					}(peerHash, i)
+				}
+
+				wg.Wait()
+
+				cancel()
+
+				if dm.IsFinished() {
+					dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", info.Name), myWindow)
+				} else {
+					dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
+				}
+			}()
+		}, myWindow)
 	}
 
-	wg.Wait()
-
-	if dm.IsFinished() {
-		log.WithFields(logrus.Fields{
-			"total_downloaded": dm.Downloaded,
-			"elapsed_time":     time.Since(stats.StartTime),
-			"avg_speed_kBps":   float64(dm.Downloaded) / time.Since(stats.StartTime).Seconds() / 1024,
-			"peak_speed_kBps":  stats.PeakSpeed / 1024,
-		}).Info("Download completed?")
-	} else {
-		fmt.Println("Download incomplete")
+	// Stop button handler
+	stopButton.OnTapped = func() {
+		if !downloadInProgress {
+			return
+		}
+		statusLabel.SetText("Stopping download...")
+		if downloadCancel != nil {
+			downloadCancel()
+		}
 	}
+
+	// Show the window and start the GUI event loop
+	myWindow.ShowAndRun()
+}
+
+// Helper function to display errors
+func showError(title string, err error, parent fyne.Window) {
+	dialog.ShowError(fmt.Errorf("%s: %v", title, err), parent)
 }
 
 /*
