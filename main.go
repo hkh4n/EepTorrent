@@ -323,6 +323,12 @@ func handlePeerConnection(pc *pp.PeerConn, dm *downloadManager) error {
 		return fmt.Errorf("Failed to send Bitfield: %v", err)
 	}
 
+	// Send Interested message
+	err = pc.SendInterested()
+	if err != nil {
+		return fmt.Errorf("Failed to send Interested message: %v", err)
+	}
+
 	for {
 		msg, err := pc.ReadMsg()
 		if err != nil {
@@ -438,6 +444,9 @@ func main() {
 		writer:   writer, // Assign the value, not a pointer
 		bitfield: pp.NewBitField(len(info.Pieces)),
 		left:     info.TotalLength(),
+		pindex:   0,
+		poffset:  0,
+		plength:  info.PieceLength,
 	}
 
 	// Obtain peers from the tracker
