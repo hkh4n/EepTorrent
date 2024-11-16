@@ -56,15 +56,19 @@ var globalStreamSession *sam3.StreamSession
 const BlockSize = 16384 // 16KB blocks
 
 type downloadManager struct {
-	writer         metainfo.Writer
-	pindex         uint32
-	poffset        uint32
-	plength        int64
-	doing          bool
-	bitfield       pp.BitField
-	downloaded     int64
-	uploaded       int64
-	left           int64
+	writer     metainfo.Writer
+	pindex     uint32
+	poffset    uint32
+	plength    int64
+	doing      bool
+	bitfield   pp.BitField
+	downloaded int64
+	uploaded   int64
+	left       int64
+	//requestPending bool
+}
+
+type peerState struct {
 	requestPending bool
 }
 
@@ -115,6 +119,9 @@ func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	copy(handshake[1+len(pstr)+8:], infoHash)
 	copy(handshake[1+len(pstr)+8+20:], []byte(peerId))
 
+	// Log the raw handshake message being sent
+	log.WithField("handshake_bytes", fmt.Sprintf("%x", handshake[:])).Debug("Sending handshake")
+
 	// Send handshake
 	_, err := conn.Write(handshake)
 	if err != nil {
@@ -131,7 +138,7 @@ func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	}
 
 	log.Debug("Successfully received handshake response")
-
+	log.WithField("handshake_response_bytes", fmt.Sprintf("%x", response)).Debug("Received handshake response")
 	// Validate response
 	if response[0] != pstrlen {
 		log.WithFields(logrus.Fields{
@@ -369,6 +376,8 @@ func handlePeerConnection(pc *pp.PeerConn, dm *downloadManager) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	defer pc.Close()
 
+	ps := &peerState{} // Initialize per-peer state
+
 	// Send BitField if needed
 	err := pc.SendBitfield(dm.bitfield)
 	if err != nil {
@@ -398,19 +407,20 @@ func handlePeerConnection(pc *pp.PeerConn, dm *downloadManager) error {
 
 		log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
 
-		err = handleMessage(pc, msg, dm)
+		err = handleMessage(pc, msg, dm, ps)
 		if err != nil {
 			log.WithError(err).Error("Error handling message from peer")
 			return err
 		}
 	}
 }
-func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
+func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager, ps *peerState) error {
 	log := log.WithFields(logrus.Fields{
 		"peer":         pc.RemoteAddr().String(),
 		"message_type": msg.Type.String(),
 	})
 
+	log.WithField("msg.ExtendedPayload", fmt.Sprintf("%x", msg.ExtendedPayload)).Debug("Handling peer message")
 	log.Debug("Handling peer message")
 
 	switch msg.Type {
@@ -430,6 +440,7 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
 		} else {
 			log.Debug("Peer has no needed pieces")
 		}
+
 	case pp.MTypeHave:
 		log.WithField("piece_index", msg.Index).Debug("Received have message")
 		pc.BitField.Set(msg.Index)
@@ -445,22 +456,56 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
 		} else {
 			log.Debug("Peer has no needed pieces")
 		}
+	case pp.MTypeChoke:
+		log.Debug("Received Choke message")
+		pc.PeerChoked = true
+		// When choked, we should stop sending requests
+		//ps.C = true
 	case pp.MTypeUnchoke:
 		// Start requesting pieces
 		//log.Info("Peer has unchoked us, starting to request pieces")
 		//return requestNextBlock(pc, dm)
-		if !dm.requestPending {
+		if !ps.requestPending {
 			log.Info("Peer has unchoked us, starting to request pieces")
-			return requestNextBlock(pc, dm)
+			return requestNextBlock(pc, dm, ps)
 		} else {
 			log.Info("Already have a pending request, waiting for piece")
 		}
+	case pp.MTypeInterested:
+		log.Debug("Received Interested message")
+		pc.PeerInterested = true
+		// Optionally, decide whether to choke or unchoke the peer
+		return nil
+	case pp.MTypeNotInterested:
+		log.Debug("Received Not Interested message")
+		pc.PeerInterested = false
+		// Optionally, decide whether to choke the peer
+	case pp.MTypeRequest:
+		log.WithFields(logrus.Fields{
+			"piece_index": msg.Index,
+			"begin":       msg.Begin,
+			"length":      msg.Length,
+		}).Debug("Received Request message")
+		// Handle requests from peers (uploading)
+	case pp.MTypeCancel:
+		log.WithFields(logrus.Fields{
+			"piece_index": msg.Index,
+			"begin":       msg.Begin,
+			"length":      msg.Length,
+		}).Debug("Received Cancel message")
+		// Handle cancel requests from peers
+		// If we have any pending uploads matching the request, we should cancel them
+	case pp.MTypePort:
+		log.WithField("listen_port", msg.Port).Debug("Received Port message")
+		//Requires DHT support
 	case pp.MTypePiece:
 		log.WithFields(logrus.Fields{
 			"piece_index": msg.Index,
 			"begin":       msg.Begin,
 			"length":      len(msg.Piece),
 		}).Debug("Received piece")
+
+		ps.requestPending = false
 
 		err := dm.OnBlock(msg.Index, msg.Begin, msg.Piece)
 		if err != nil {
@@ -469,7 +514,10 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
 		}
 		// Request next block
 		log.Debug("Successfully processed piece, requesting next block")
-		return requestNextBlock(pc, dm)
+		return requestNextBlock(pc, dm, ps)
+	case pp.MTypeExtended:
+		log.Debug("Received extended message, which is currently not supported")
+		return nil
 	default:
 		// Handle other message types if necessary
 		log.WithField("message_type", msg.Type).Debug("Ignoring unhandled message type")
@@ -478,6 +526,9 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *downloadManager) error {
 }
 
 func main() {
+	// init download stats
+	stats := newDownloadStats()
+
 	//init global sam
 	var err error
 	globalSAM, err = sam3.NewSAM("127.0.0.1:7656")
@@ -491,12 +542,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to generate keys for global SAM session: %v", err)
 	}
+	//set options
+	options := []string{
+		"inbound.length=1",
+		"outbound.length=1",
+		"inbound.quantity=3",
+		"outbound.quantity=3",
+		"inbound.backupQuantity=1",
+		"outbound.backupQuantity=1",
+		"inbound.lengthVariance=0",
+		"outbound.lengthVariance=0",
+	}
+
+	//
 
 	globalSessionName := fmt.Sprintf("global-session-%d", os.Getpid())
 	globalStreamSession, err = globalSAM.NewStreamSessionWithSignature(
 		globalSessionName,
 		globalKeys,
-		sam3.Options_Default,
+		options,
 		strconv.Itoa(7),
 	)
 	if err != nil {
@@ -523,15 +587,42 @@ func main() {
 	fmt.Printf("Pieces: %d\n", len(info.Pieces))
 
 	// Initialize the file writer
-	outputFile := info.Name
-	mode := os.FileMode(0644)
-	file, err := os.Create(outputFile)
-	if err != nil {
-		log.Fatalf("Failed to create output file: %v", err)
-	}
-	defer file.Close()
+	/*
+		outputFile := info.Name
+		mode := os.FileMode(0644)
+		file, err := os.Create(outputFile)
+		if err != nil {
+			log.Fatalf("Failed to create output file: %v", err)
+		}
+		defer file.Close()
 
-	writer := metainfo.NewWriter(outputFile, info, mode)
+	*/
+	var outputPath string
+	var mode os.FileMode
+	if len(info.Files) == 0 {
+		// Single-file torrent
+		outputPath = info.Name
+		mode = 0644
+	} else {
+		// Multi-file torrent
+		outputPath = info.Name
+		mode = 0755
+		// Create the directory if it doesn't exist
+		err := os.MkdirAll(outputPath, mode)
+		if err != nil && !os.IsExist(err) {
+			log.Fatalf("Failed to create output directory: %v", err)
+		}
+	}
+
+	writer := metainfo.NewWriter(outputPath, info, mode)
+
+	remainingData := info.TotalLength()
+	var dm_plength int64
+	if remainingData < info.PieceLength {
+		dm_plength = remainingData
+	} else {
+		dm_plength = info.PieceLength
+	}
 
 	// Init downloadManager
 	dm := &downloadManager{
@@ -540,8 +631,17 @@ func main() {
 		left:     info.TotalLength(),
 		pindex:   0,
 		poffset:  0,
-		plength:  info.PieceLength,
+		plength:  dm_plength,
 	}
+
+	// Start progress monitoring goroutine
+	progressTicker := time.NewTicker(5 * time.Second)
+	go func() {
+		for range progressTicker.C {
+			dm.logProgress()
+		}
+	}()
+	defer progressTicker.Stop()
 
 	// Obtain peers from the tracker
 	peers, err := getPeersFromSimpTracker(&mi)
@@ -557,7 +657,15 @@ func main() {
 		wg.Add(1)
 		go func(peerHash []byte, index int) {
 			defer wg.Done()
+			stats.connectionStarted()
+			defer stats.connectionEnded()
+			peerLog := log.WithFields(logrus.Fields{
+				"peer_index": index,
+				"peer_hash":  fmt.Sprintf("%x", peerHash),
+			})
+			peerLog.Info("Starting peer connection")
 			connectToPeer(peerHash, index, &mi, dm)
+			peerLog.Info("Peer connection completed")
 		}(peerHash, i)
 	}
 
@@ -566,7 +674,12 @@ func main() {
 
 	// Check if the download is complete
 	if dm.IsFinished() {
-		fmt.Println("Download complete")
+		log.WithFields(logrus.Fields{
+			"total_downloaded": dm.downloaded,
+			"elapsed_time":     time.Since(stats.startTime),
+			"avg_speed_kBps":   float64(dm.downloaded) / time.Since(stats.startTime).Seconds() / 1024,
+			"peak_speed_kBps":  stats.peakSpeed / 1024,
+		}).Info("Download completed?")
 	} else {
 		fmt.Println("Download incomplete")
 	}
@@ -643,7 +756,7 @@ func (h *downloadHandler) OnMessage(pc *pp.PeerConn, msg pp.Message) error {
 		return err
 	}
 */
-func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
+func requestNextBlock(pc *pp.PeerConn, dm *downloadManager, ps *peerState) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
 
 	for !dm.IsFinished() {
@@ -708,7 +821,8 @@ func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
 		err := pc.SendRequest(dm.pindex, dm.poffset, length)
 		if err == nil {
 			dm.doing = true
-			dm.requestPending = true
+			ps.requestPending = true
+			//dm.requestPending = true
 			//fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
 			//dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
 			log.WithFields(logrus.Fields{
@@ -726,15 +840,31 @@ func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
 	return nil
 }
 func (dm *downloadManager) IsFinished() bool {
-	return dm.pindex >= uint32(dm.writer.Info().CountPieces())
+	finished := dm.pindex >= uint32(dm.writer.Info().CountPieces())
+	log.WithFields(logrus.Fields{
+		"current_index": dm.pindex,
+		"total_pieces":  dm.writer.Info().CountPieces(),
+		"is_finished":   finished,
+	}).Debug("Checking if download is finished")
+	return finished
 }
 
 func (dm *downloadManager) OnBlock(index, offset uint32, b []byte) error {
-	dm.requestPending = false
+	log := log.WithFields(logrus.Fields{
+		"piece_index":    index,
+		"current_index":  dm.pindex,
+		"offset":         offset,
+		"current_offset": dm.poffset,
+		"block_size":     len(b),
+	})
+
+	//dm.requestPending = false
 	if dm.pindex != index {
+		log.Error("Inconsistent piece index")
 		return fmt.Errorf("inconsistent piece: old=%d, new=%d", dm.pindex, index)
 	}
 	if dm.poffset != offset {
+		log.Error("Inconsistent offset")
 		return fmt.Errorf("inconsistent offset for piece '%d': old=%d, new=%d",
 			index, dm.poffset, offset)
 	}
@@ -747,21 +877,120 @@ func (dm *downloadManager) OnBlock(index, offset uint32, b []byte) error {
 		dm.downloaded += int64(n)
 		dm.left -= int64(n)
 
+		log.WithFields(logrus.Fields{
+			"bytes_written":    n,
+			"new_offset":       dm.poffset,
+			"remaining_length": dm.plength,
+			"total_downloaded": dm.downloaded,
+			"remaining_bytes":  dm.left,
+		}).Debug("Updated download progress")
+
 		// Update bitfield for completed piece
 		if dm.plength <= 0 {
 			dm.bitfield.Set(index)
-			fmt.Printf("\nCompleted piece %d\n", index)
+			log.WithFields(logrus.Fields{
+				"piece_index":  index,
+				"total_pieces": dm.writer.Info().CountPieces(),
+				"progress":     fmt.Sprintf("%.2f%%", float64(index+1)/float64(dm.writer.Info().CountPieces())*100),
+			}).Info("Completed piece")
 		}
+	} else {
+		log.WithError(err).Error("Failed to write block")
 	}
 	return err
 }
 func (dm *downloadManager) needPiecesFrom(pc *pp.PeerConn) bool {
+	log := log.WithField("peer", pc.RemoteAddr().String())
+
 	for i := 0; i < dm.writer.Info().CountPieces(); i++ {
 		if !dm.bitfield.IsSet(uint32(i)) && pc.BitField.IsSet(uint32(i)) {
+			log.WithFields(logrus.Fields{
+				"piece_index":    i,
+				"have_piece":     dm.bitfield.IsSet(uint32(i)),
+				"peer_has_piece": pc.BitField.IsSet(uint32(i)),
+			}).Debug("Found needed piece from peer")
 			return true
 		}
 	}
+	log.Debug("No needed pieces from this peer")
 	return false
+}
+func (dm *downloadManager) logProgress() {
+	totalPieces := dm.writer.Info().CountPieces()
+	completedPieces := 0
+	for i := 0; i < totalPieces; i++ {
+		if dm.bitfield.IsSet(uint32(i)) {
+			completedPieces++
+		}
+	}
+
+	log.WithFields(logrus.Fields{
+		"completed_pieces": completedPieces,
+		"total_pieces":     totalPieces,
+		"progress":         fmt.Sprintf("%.2f%%", float64(completedPieces)/float64(totalPieces)*100),
+		"downloaded_bytes": dm.downloaded,
+		"total_bytes":      dm.writer.Info().TotalLength(),
+		"remaining_bytes":  dm.left,
+		"current_piece":    dm.pindex,
+		"current_offset":   dm.poffset,
+	}).Info("Download progress update")
+}
+
+// Add this struct to track download statistics
+type downloadStats struct {
+	startTime          time.Time
+	lastProgressUpdate time.Time
+	totalBytesReceived int64
+	currentSpeed       float64
+	peakSpeed          float64
+	activeConnections  int
+	mu                 sync.Mutex
+}
+
+func newDownloadStats() *downloadStats {
+	return &downloadStats{
+		startTime:          time.Now(),
+		lastProgressUpdate: time.Now(),
+	}
+}
+
+func (stats *downloadStats) updateProgress(bytesReceived int64) {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+
+	now := time.Now()
+	duration := now.Sub(stats.lastProgressUpdate).Seconds()
+	if duration > 0 {
+		stats.currentSpeed = float64(bytesReceived) / duration
+		if stats.currentSpeed > stats.peakSpeed {
+			stats.peakSpeed = stats.currentSpeed
+		}
+	}
+
+	stats.totalBytesReceived += bytesReceived
+	stats.lastProgressUpdate = now
+
+	log.WithFields(logrus.Fields{
+		"current_speed_kBps": stats.currentSpeed / 1024,
+		"peak_speed_kBps":    stats.peakSpeed / 1024,
+		"total_received_MB":  float64(stats.totalBytesReceived) / 1024 / 1024,
+		"elapsed_time":       now.Sub(stats.startTime).String(),
+		"active_connections": stats.activeConnections,
+	}).Info("Download statistics update")
+}
+
+func (stats *downloadStats) connectionStarted() {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	stats.activeConnections++
+	log.WithField("active_connections", stats.activeConnections).Debug("Peer connection started")
+}
+
+func (stats *downloadStats) connectionEnded() {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	stats.activeConnections--
+	log.WithField("active_connections", stats.activeConnections).Debug("Peer connection ended")
 }
 func example_postman_request() {
 	fmt.Println("Generating new SAM")
