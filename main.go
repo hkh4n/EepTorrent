@@ -1,5 +1,24 @@
 package main
 
+/*
+An I2P-only BitTorrent client.
+Copyright (C) 2024 Haris Khan
+Copyright (C) 2024 The EepTorrent Developers
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 import (
 	"context"
 	"eeptorrent/lib/download"
@@ -136,7 +155,33 @@ func main() {
 	// Layout the UI components with side menu
 	content := container.NewBorder(nil, nil, sideMenu, nil, mainContent)
 	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(600, 400))
+	myWindow.Resize(fyne.NewSize(800, 600))
+
+	// Add a menu bar
+	menu := fyne.NewMainMenu(
+		fyne.NewMenu("File",
+			fyne.NewMenuItem("Open Torrent File...", func() {
+				// Trigger the start button action
+				startButton.OnTapped()
+			}),
+			fyne.NewMenuItemSeparator(),
+			fyne.NewMenuItem("Quit", func() {
+				myApp.Quit()
+			}),
+		),
+		fyne.NewMenu("Edit",
+			fyne.NewMenuItem("Preferences", func() {
+				// Focus on the settings side menu or open a preferences dialog
+				// For now, we'll do nothing as settings are always visible
+			}),
+		),
+		fyne.NewMenu("Help",
+			fyne.NewMenuItem("About", func() {
+				showAboutDialog(myApp, myWindow)
+			}),
+		),
+	)
+	myWindow.SetMainMenu(menu)
 
 	// Start button handler
 	startButton.OnTapped = func() {
@@ -317,6 +362,18 @@ func main() {
 // Helper function to display errors
 func showError(title string, err error, parent fyne.Window) {
 	dialog.ShowError(fmt.Errorf("%s: %v", title, err), parent)
+}
+
+// Helper function to show the About dialog
+func showAboutDialog(app fyne.App, parent fyne.Window) {
+	dialog.ShowCustom("About EepTorrent", "Close",
+		container.NewVBox(
+			widget.NewLabelWithStyle("EepTorrent", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			widget.NewLabel("Version 0.0.1"),
+			widget.NewLabel("An I2P-only BitTorrent client."),
+			widget.NewLabel("© 2024 Haris Khan"),
+			widget.NewLabel("© 2024 The EepTorrent Developers"),
+		), parent)
 }
 
 /*
