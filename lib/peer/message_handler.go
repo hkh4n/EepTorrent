@@ -3,6 +3,7 @@ package peer
 import (
 	"eeptorrent/lib/download"
 	"fmt"
+	"github.com/go-i2p/go-i2p-bt/bencode"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
 )
@@ -113,7 +114,30 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 		log.Debug("Successfully processed piece, requesting next block")
 		return requestNextBlock(pc, dm, ps)
 	case pp.MTypeExtended:
-		log.Debug("Received extended message, which is currently not supported")
+		//log.Debug("Received extended message, which is currently not supported")
+		if msg.ExtendedID == 0 { // Extended handshake
+			handshake := pp.ExtendedHandshakeMsg{
+				V: "EepTorrent 0.0.1",
+				M: make(map[string]uint8),
+			}
+			handshake.M["ut_metadata"] = 1
+			//handshake.M = make(map[string]int)
+			var remoteHandshake pp.ExtendedHandshakeMsg
+			if err := bencode.DecodeBytes(msg.ExtendedPayload, &remoteHandshake); err != nil {
+				log.WithError(err).Error("Failed to decode extended handshake")
+				return err
+			}
+			// Log the remote client info
+			log.WithFields(logrus.Fields{
+				"remote_client":        remoteHandshake.V,
+				"supported_extensions": remoteHandshake.M,
+			}).Info("Received extended handshake from peer")
+			if err := pc.SendExtHandshakeMsg(handshake); err != nil {
+				log.WithError(err).Error("Failed to send extended handshake")
+				return err
+			}
+			log.Debug("Successfully sent extended handshake")
+		}
 		return nil
 	default:
 		// Handle other message types if necessary

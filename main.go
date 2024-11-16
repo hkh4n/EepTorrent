@@ -56,7 +56,8 @@ func main() {
 	//http://tracker2.postman.i2p/announce.php
 	//ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p <-> tracker2.postman.i2p
 	// Load the torrent file
-	mi, err := metainfo.LoadFromFile("torrent-i2pify+script.torrent")
+	mi, err := metainfo.LoadFromFile("rarbg_db.zip.torrent")
+	//mi, err := metainfo.LoadFromFile("torrent-i2pify+script.torrent")
 	if err != nil {
 		log.Fatalf("Failed to load torrent: %v", err)
 	}
