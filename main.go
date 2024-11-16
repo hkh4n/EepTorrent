@@ -656,8 +656,18 @@ func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
 
 			dm.poffset = 0
 			// Adjusted to use dm.writer.Info()
-			pieceLength := dm.writer.Info().Piece(int(dm.pindex)).Length()
-			dm.plength = pieceLength
+			/*
+				pieceLength := dm.writer.Info().Piece(int(dm.pindex)).Length()
+				dm.plength = pieceLength
+				log.WithField("plength", dm.plength).Debug("Set dm.plength")
+
+			*/
+			remainingData := dm.writer.Info().TotalLength() - int64(dm.pindex)*dm.writer.Info().PieceLength
+			if remainingData < dm.writer.Info().PieceLength {
+				dm.plength = remainingData
+			} else {
+				dm.plength = dm.writer.Info().PieceLength
+			}
 			log.WithField("plength", dm.plength).Debug("Set dm.plength")
 		}
 
@@ -672,26 +682,33 @@ func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
 
 		// Calculate block size
 		length := uint32(BlockSize)
-		// Adjust length to not exceed remaining data in the piece
-		if uint32(dm.plength)-dm.poffset < length {
-			length = uint32(dm.plength) - dm.poffset
+		remaining := uint32(dm.plength) - dm.poffset
+		if remaining < length {
+			length = remaining
 		}
+		log.WithFields(logrus.Fields{
+			"piece_index": dm.pindex,
+			"offset":      dm.poffset,
+			"length":      length,
+		}).Debug("Requesting block")
+		// Adjust length to not exceed remaining data in the piece
+		/*
+			if uint32(dm.plength)-dm.poffset < length {
+				length = uint32(dm.plength) - dm.poffset
+			}
+
+		*/
 		/*
 			if length > uint32(dm.plength) {
 				length = uint32(dm.plength)
 			}
 		*/
 
-		log.WithFields(logrus.Fields{
-			"piece_index": dm.pindex,
-			"offset":      dm.poffset,
-			"length":      length,
-		}).Debug("Requesting block")
-
 		// Request the block
 		err := pc.SendRequest(dm.pindex, dm.poffset, length)
 		if err == nil {
 			dm.doing = true
+			dm.requestPending = true
 			//fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
 			//dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
 			log.WithFields(logrus.Fields{
