@@ -157,24 +157,17 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 			}
 
 			dm.POffset = 0
-			// Adjusted to use dm.writer.Info()
-			/*
-				pieceLength := dm.writer.Info().Piece(int(dm.pindex)).Length()
-				dm.plength = pieceLength
-				log.WithField("plength", dm.plength).Debug("Set dm.plength")
-
-			*/
 			remainingData := dm.Writer.Info().TotalLength() - int64(dm.PIndex)*dm.Writer.Info().PieceLength
 			if remainingData < dm.Writer.Info().PieceLength {
 				dm.PLength = remainingData
 			} else {
 				dm.PLength = dm.Writer.Info().PieceLength
 			}
-			log.WithField("plength", dm.PLength).Debug("Set dm.plength")
+			log.WithField("plength", dm.PLength).Debug("Set dm.PLength")
 		}
 
 		// Check if peer has the piece
-		if !pc.BitField.IsSet(uint32(int(dm.PIndex))) {
+		if !pc.BitField.IsSet(uint32(dm.PIndex)) {
 			// Try next piece
 			log.WithField("piece_index", dm.PIndex).Debug("Peer doesn't have requested piece, trying next")
 			dm.PIndex++
@@ -182,38 +175,33 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 			continue
 		}
 
-		// Calculate block size
-		length := uint32(BlockSize)
-		remaining := uint32(dm.PLength) - dm.POffset
-		if remaining < length {
-			length = remaining
+		// Calculate remaining bytes in the piece
+		remaining := dm.PLength - int64(dm.POffset)
+		if remaining <= 0 {
+			// No more data to request in this piece
+			dm.PLength = 0
+			continue
 		}
+
+		// Calculate block size
+		var length uint32
+		if remaining < int64(BlockSize) {
+			length = uint32(remaining)
+		} else {
+			length = uint32(BlockSize)
+		}
+
 		log.WithFields(logrus.Fields{
 			"piece_index": dm.PIndex,
 			"offset":      dm.POffset,
 			"length":      length,
 		}).Debug("Requesting block")
-		// Adjust length to not exceed remaining data in the piece
-		/*
-			if uint32(dm.plength)-dm.poffset < length {
-				length = uint32(dm.plength) - dm.poffset
-			}
 
-		*/
-		/*
-			if length > uint32(dm.plength) {
-				length = uint32(dm.plength)
-			}
-		*/
-
-		// Request the block
+		// Send the request
 		err := pc.SendRequest(dm.PIndex, dm.POffset, length)
 		if err == nil {
 			dm.Doing = true
 			ps.RequestPending = true
-			//dm.requestPending = true
-			//fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
-			//dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
 			log.WithFields(logrus.Fields{
 				"piece_index":  dm.PIndex,
 				"total_pieces": dm.Writer.Info().CountPieces(),
