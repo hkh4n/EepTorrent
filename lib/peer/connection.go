@@ -2,6 +2,7 @@ package peer
 
 import (
 	"bytes"
+	"context"
 	"eeptorrent/lib/download"
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/util"
@@ -20,7 +21,7 @@ type PeerState struct {
 	RequestPending bool
 }
 
-func ConnectToPeer(peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) {
+func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) {
 	peerStream := i2p.GlobalStreamSession
 
 	// Convert hash to Base32 address
@@ -59,13 +60,13 @@ func ConnectToPeer(peerHash []byte, index int, mi *metainfo.MetaInfo, dm *downlo
 	pc.Timeout = 120 * time.Second
 
 	// Start the message handling loop
-	err = handlePeerConnection(pc, dm)
+	err = handlePeerConnection(ctx, pc, dm)
 	if err != nil {
 		log.Printf("Peer connection error: %v", err)
 	}
 }
 
-func handlePeerConnection(pc *pp.PeerConn, dm *download.DownloadManager) error {
+func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
 	//log.WithField("peer", pc.RemoteAddr().String()).Debug()
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	defer pc.Close()
@@ -89,22 +90,28 @@ func handlePeerConnection(pc *pp.PeerConn, dm *download.DownloadManager) error {
 	log.Info("Successfully initiated peer connection")
 
 	for {
-		msg, err := pc.ReadMsg()
-		if err != nil {
-			if err == io.EOF {
-				log.Info("Peer connection closed")
-				return nil
+		select {
+		case <-ctx.Done():
+			log.Info("Peer connection cancelled")
+			return nil
+		default:
+			msg, err := pc.ReadMsg()
+			if err != nil {
+				if err == io.EOF {
+					log.Info("Peer connection closed")
+					return nil
+				}
+				log.WithError(err).Error("Error reading message from peer")
+				return err
 			}
-			log.WithError(err).Error("Error reading message from peer")
-			return err
-		}
 
-		log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
+			log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
 
-		err = handleMessage(pc, msg, dm, ps)
-		if err != nil {
-			log.WithError(err).Error("Error handling message from peer")
-			return err
+			err = handleMessage(pc, msg, dm, ps)
+			if err != nil {
+				log.WithError(err).Error("Error handling message from peer")
+				return err
+			}
 		}
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -52,21 +54,12 @@ func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("EepTorrent")
 
-	// Create UI components
+	// Create UI components for the main content
 	progressBar := widget.NewProgressBar()
 	statusLabel := widget.NewLabel("Ready")
 	startButton := widget.NewButton("Start Download", nil)
 	stopButton := widget.NewButton("Stop Download", nil)
 	stopButton.Disable()
-
-	// Layout the UI components
-	content := container.NewVBox(
-		progressBar,
-		statusLabel,
-		container.NewHBox(startButton, stopButton),
-	)
-	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(400, 200))
 
 	// Variables to manage download state
 	var dm *download.DownloadManager
@@ -74,9 +67,111 @@ func main() {
 	var downloadInProgress bool
 	var downloadCancel context.CancelFunc
 
+	// Create the settings form
+	downloadDirEntry := widget.NewEntry()
+	downloadDirEntry.SetPlaceHolder("Select download directory")
+	downloadDirButton := widget.NewButton("Browse", func() {
+		dirDialog := dialog.NewFolderOpen(func(list fyne.ListableURI, err error) {
+			if err == nil && list != nil {
+				downloadDirEntry.SetText(list.Path())
+			}
+		}, myWindow)
+		dirDialog.Show()
+	})
+
+	maxConnectionsEntry := widget.NewEntry()
+	maxConnectionsEntry.SetText("50") // Default value
+
+	portEntry := widget.NewEntry()
+	portEntry.SetText("6881") // Default port
+
+	uploadLimitEntry := widget.NewEntry()
+	uploadLimitEntry.SetText("0") // 0 means unlimited
+
+	downloadLimitEntry := widget.NewEntry()
+	downloadLimitEntry.SetText("0") // 0 means unlimited
+
+	loggingLevelSelect := widget.NewSelect([]string{"Debug", "Info", "Warning", "Error", "Fatal", "Panic"}, func(value string) {
+		// Adjust log level based on selection
+		switch value {
+		case "Debug":
+			log.SetLevel(logrus.DebugLevel)
+		case "Info":
+			log.SetLevel(logrus.InfoLevel)
+		case "Warning":
+			log.SetLevel(logrus.WarnLevel)
+		case "Error":
+			log.SetLevel(logrus.ErrorLevel)
+		case "Fatal":
+			log.SetLevel(logrus.FatalLevel)
+		case "Panic":
+			log.SetLevel(logrus.PanicLevel)
+		}
+	})
+	loggingLevelSelect.SetSelected("Info")
+
+	// Assemble the settings form
+	settingsForm := widget.NewForm(
+		widget.NewFormItem("Download Directory", container.NewHBox(downloadDirEntry, downloadDirButton)),
+		widget.NewFormItem("Max Connections", maxConnectionsEntry),
+		widget.NewFormItem("Listening Port", portEntry),
+		widget.NewFormItem("Upload Limit (kB/s)", uploadLimitEntry),
+		widget.NewFormItem("Download Limit (kB/s)", downloadLimitEntry),
+		widget.NewFormItem("Logging Level", loggingLevelSelect),
+	)
+
+	// Create the side menu (settings)
+	sideMenu := container.NewVBox(
+		widget.NewLabelWithStyle("Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		settingsForm,
+	)
+
+	// Create the main content area
+	mainContent := container.NewVBox(
+		progressBar,
+		statusLabel,
+		container.NewHBox(startButton, stopButton),
+	)
+
+	// Layout the UI components with side menu
+	content := container.NewBorder(nil, nil, sideMenu, nil, mainContent)
+	myWindow.SetContent(content)
+	myWindow.Resize(fyne.NewSize(600, 400))
+
 	// Start button handler
 	startButton.OnTapped = func() {
 		if downloadInProgress {
+			return
+		}
+
+		// Validate and apply settings
+		downloadDir := downloadDirEntry.Text
+		if downloadDir == "" {
+			showError("Invalid Settings", fmt.Errorf("Please select a download directory"), myWindow)
+			return
+		}
+
+		maxConnections, err := strconv.Atoi(maxConnectionsEntry.Text)
+		if err != nil || maxConnections <= 0 {
+			showError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
+			return
+		}
+
+		port, err := strconv.Atoi(portEntry.Text)
+		if err != nil || port <= 0 || port > 65535 {
+			showError("Invalid Settings", fmt.Errorf("Port must be a valid TCP port number"), myWindow)
+			return
+		}
+
+		uploadLimit, err := strconv.Atoi(uploadLimitEntry.Text)
+		if err != nil || uploadLimit < 0 {
+			showError("Invalid Settings", fmt.Errorf("Upload Limit must be 0 or a positive integer"), myWindow)
+			return
+		}
+
+		downloadLimit, err := strconv.Atoi(downloadLimitEntry.Text)
+		if err != nil || downloadLimit < 0 {
+			showError("Invalid Settings", fmt.Errorf("Download Limit must be 0 or a positive integer"), myWindow)
 			return
 		}
 
@@ -132,11 +227,11 @@ func main() {
 				var mode os.FileMode
 				if len(info.Files) == 0 {
 					// Single-file torrent
-					outputPath = info.Name
+					outputPath = filepath.Join(downloadDir, info.Name)
 					mode = 0644
 				} else {
 					// Multi-file torrent
-					outputPath = info.Name
+					outputPath = filepath.Join(downloadDir, info.Name)
 					mode = 0755
 					// Create the directory if it doesn't exist
 					err := os.MkdirAll(outputPath, mode)
@@ -175,14 +270,20 @@ func main() {
 					return
 				}
 
-				for i, peerHash := range peers {
+				// Limit the number of connections based on user settings
+				maxPeers := maxConnections
+				if len(peers) < maxPeers {
+					maxPeers = len(peers)
+				}
+
+				for i := 0; i < maxPeers; i++ {
 					wg.Add(1)
 					go func(peerHash []byte, index int) {
 						defer wg.Done()
 						stats.ConnectionStarted()
 						defer stats.ConnectionEnded()
-						peer.ConnectToPeer(peerHash, index, &mi, dm)
-					}(peerHash, i)
+						peer.ConnectToPeer(ctx, peerHash, index, &mi, dm)
+					}(peers[i], i)
 				}
 
 				wg.Wait()
