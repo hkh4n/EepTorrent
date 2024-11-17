@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-i2p/go-i2p-bt/metainfo"
@@ -146,9 +147,12 @@ func main() {
 		settingsForm,
 	)
 
+	downloadSpeedLabel := widget.NewLabel("Speed: 0 KB/s")
+
 	// Create the main content area
 	mainContent := container.NewVBox(
 		progressBar,
+		downloadSpeedLabel,
 		statusLabel,
 		container.NewHBox(startButton, stopButton),
 	)
@@ -294,13 +298,26 @@ func main() {
 				downloadCancel = cancel
 
 				go func() {
+					var prevDownloaded int64 = 0
 					for {
 						select {
 						case <-progressTicker.C:
 							dm.LogProgress()
 							progress := dm.Progress() / 100
+
+							// Safely load the total downloaded bytes
+							currentDownloaded := atomic.LoadInt64(&dm.Downloaded)
+							bytesDownloaded := currentDownloaded - prevDownloaded
+							prevDownloaded = currentDownloaded
+
+							downloadSpeedKBps := float64(bytesDownloaded) / 1024 // KB/s
+
+							// Update GUI elements on the main thread
+							//fyne.CurrentApp().Driver().RunOnMain(func() {
 							progressBar.SetValue(progress)
 							statusLabel.SetText(fmt.Sprintf("Downloading: %.2f%%", dm.Progress()))
+							downloadSpeedLabel.SetText(fmt.Sprintf("Speed: %.2f KB/s", downloadSpeedKBps))
+							//})
 						case <-ctx.Done():
 							progressTicker.Stop()
 							return

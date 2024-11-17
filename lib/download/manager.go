@@ -24,6 +24,7 @@ import (
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
+	"sync/atomic"
 )
 
 var log = logrus.New()
@@ -94,8 +95,8 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 	if err == nil {
 		dm.POffset = offset + uint32(n)
 		dm.PLength -= int64(n)
-		dm.Downloaded += int64(n)
-		dm.Left -= int64(n)
+		atomic.AddInt64(&dm.Downloaded, int64(n))
+		atomic.AddInt64(&dm.Left, -int64(n))
 
 		log.WithFields(logrus.Fields{
 			"bytes_written":    n,
@@ -137,11 +138,13 @@ func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 }
 func (dm *DownloadManager) LogProgress() {
 	progress := dm.Progress()
+	downloaded := atomic.LoadInt64(&dm.Downloaded)
+	left := atomic.LoadInt64(&dm.Left)
 	log.WithFields(logrus.Fields{
 		"progress":         fmt.Sprintf("%.2f%%", progress),
-		"downloaded_bytes": dm.Downloaded,
+		"downloaded_bytes": downloaded,
 		"total_bytes":      dm.Writer.Info().TotalLength(),
-		"remaining_bytes":  dm.Left,
+		"remaining_bytes":  left,
 		"current_piece":    dm.PIndex,
 		"current_offset":   dm.POffset,
 	}).Info("Download progress update")

@@ -37,7 +37,8 @@ import (
 )
 
 type PeerState struct {
-	RequestPending bool
+	RequestPending  bool
+	PendingRequests int
 }
 
 func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) {

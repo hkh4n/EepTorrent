@@ -123,7 +123,7 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 		}).Debug("Received piece")
 
 		ps.RequestPending = false
-
+		ps.PendingRequests--
 		err := dm.OnBlock(msg.Index, msg.Begin, msg.Piece)
 		if err != nil {
 			log.WithError(err).Error("Error handling piece")
@@ -166,8 +166,8 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 }
 func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerState) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
-
-	for !dm.IsFinished() {
+	pipelineLimit := 5
+	for ps.PendingRequests < pipelineLimit && !dm.IsFinished() {
 		if dm.PLength <= 0 {
 			dm.PIndex++
 			if dm.IsFinished() {
@@ -219,6 +219,7 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 		// Send the request
 		err := pc.SendRequest(dm.PIndex, dm.POffset, length)
 		if err == nil {
+			ps.PendingRequests++
 			dm.Doing = true
 			ps.RequestPending = true
 			log.WithFields(logrus.Fields{
