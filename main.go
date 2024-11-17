@@ -138,6 +138,7 @@ func main() {
 		widget.NewFormItem("Download Limit (kB/s)", downloadLimitEntry),
 		widget.NewFormItem("Logging Level", loggingLevelSelect),
 	)
+	settingsForm.Resize(fyne.NewSize(600, settingsForm.Size().Height))
 
 	// Create the side menu (settings)
 	sideMenu := container.NewVBox(
