@@ -3,7 +3,6 @@ package main
 /*
 An I2P-only BitTorrent client.
 Copyright (C) 2024 Haris Khan
-Copyright (C) 2024 The EepTorrent Developers
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -390,7 +389,6 @@ func showAboutDialog(app fyne.App, parent fyne.Window) {
 			widget.NewLabel("Version 0.0.1"),
 			widget.NewLabel("An I2P-only BitTorrent client."),
 			widget.NewLabel("© 2024 Haris Khan"),
-			widget.NewLabel("© 2024 The EepTorrent Developers"),
 		), parent)
 }
 
