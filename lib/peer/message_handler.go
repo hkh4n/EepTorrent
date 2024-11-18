@@ -25,6 +25,7 @@ import (
 	"github.com/go-i2p/go-i2p-bt/bencode"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
+	"sync/atomic"
 )
 
 var log = logrus.New()
@@ -123,7 +124,7 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 		}).Debug("Received piece")
 
 		ps.RequestPending = false
-		ps.PendingRequests--
+		atomic.AddInt32(&ps.PendingRequests, -1) // Safely decrement
 		err := dm.OnBlock(msg.Index, msg.Begin, msg.Piece)
 		if err != nil {
 			log.WithError(err).Error("Error handling piece")
@@ -167,12 +168,14 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerState) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	pipelineLimit := 5
-	for ps.PendingRequests < pipelineLimit && !dm.IsFinished() {
+	var firstErr error
+
+	for atomic.LoadInt32(&ps.PendingRequests) < int32(pipelineLimit) && !dm.IsFinished() {
 		if dm.PLength <= 0 {
 			dm.PIndex++
 			if dm.IsFinished() {
 				log.Info("Download finished")
-				return nil
+				break
 			}
 
 			dm.POffset = 0
@@ -218,21 +221,31 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 
 		// Send the request
 		err := pc.SendRequest(dm.PIndex, dm.POffset, length)
-		if err == nil {
-			ps.PendingRequests++
-			dm.Doing = true
-			ps.RequestPending = true
-			log.WithFields(logrus.Fields{
-				"piece_index":  dm.PIndex,
-				"total_pieces": dm.Writer.Info().CountPieces(),
-				"offset":       dm.POffset,
-				"length":       length,
-			}).Info("Successfully requested block")
-			return nil
-		} else {
+		if err != nil {
 			log.WithError(err).Error("Failed to send request")
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			// Optionally, decide whether to break or continue on error
+			continue
+		}
+
+		atomic.AddInt32(&ps.PendingRequests, 1)
+		dm.Doing = true
+		ps.RequestPending = true
+		log.WithFields(logrus.Fields{
+			"piece_index":  dm.PIndex,
+			"total_pieces": dm.Writer.Info().CountPieces(),
+			"offset":       dm.POffset,
+			"length":       length,
+		}).Info("Successfully requested block")
+
+		// Move to the next block
+		dm.POffset += uint32(length)
+		if dm.POffset >= uint32(dm.PLength) {
+			dm.PLength = 0
 		}
 	}
-	return nil
+
+	return firstErr
 }

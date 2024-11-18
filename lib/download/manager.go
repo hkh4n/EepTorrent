@@ -69,7 +69,6 @@ func (dm *DownloadManager) IsFinished() bool {
 	}).Debug("Checking if download is finished")
 	return finished
 }
-
 func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 	log := log.WithFields(logrus.Fields{
 		"piece_index":    index,
