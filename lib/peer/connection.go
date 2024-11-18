@@ -33,15 +33,47 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
 type PeerState struct {
 	RequestPending  bool
 	PendingRequests int32
+	RequestedBlocks map[uint32]map[uint32]bool // piece index -> offset -> requested
+	sync.Mutex
+}
+
+// IsBlockRequested checks if a specific block has already been requested
+func (ps *PeerState) IsBlockRequested(pieceIndex, offset uint32) bool {
+	ps.Lock()
+	defer ps.Unlock()
+	if _, exists := ps.RequestedBlocks[pieceIndex]; !exists {
+		return false
+	}
+	return ps.RequestedBlocks[pieceIndex][offset]
+}
+
+// MarkBlockRequested marks a specific block as requested
+func (ps *PeerState) MarkBlockRequested(pieceIndex, offset uint32) {
+	ps.Lock()
+	defer ps.Unlock()
+	if _, exists := ps.RequestedBlocks[pieceIndex]; !exists {
+		ps.RequestedBlocks[pieceIndex] = make(map[uint32]bool)
+	}
+	ps.RequestedBlocks[pieceIndex][offset] = true
+}
+func NewPeerState() *PeerState {
+	return &PeerState{
+		RequestedBlocks: make(map[uint32]map[uint32]bool),
+	}
 }
 
 func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) {
+	// Add connection timeout
+	_, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	peerStream := i2p.GlobalStreamSession
 
 	// Convert hash to Base32 address
@@ -91,7 +123,7 @@ func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	defer pc.Close()
 
-	ps := &PeerState{} // Initialize per-peer state
+	ps := NewPeerState() // Initialize per-peer state
 
 	// Send BitField if needed
 	err := pc.SendBitfield(dm.Bitfield)
