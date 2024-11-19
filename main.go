@@ -1,7 +1,7 @@
 package main
 
 /*
-An I2P-only BitTorrent client.
+A cross-platform I2P-only BitTorrent client.
 Copyright (C) 2024 Haris Khan
 
 This program is free software: you can redistribute it and/or modify
@@ -411,7 +411,7 @@ func showAboutDialog(app fyne.App, parent fyne.Window) {
 		container.NewVBox(
 			widget.NewLabelWithStyle("EepTorrent", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 			widget.NewLabel(fmt.Sprintf("Version: %s-%s", util.Version, gitCommitDisplay)),
-			widget.NewLabel("An I2P-only BitTorrent client."),
+			widget.NewLabel("A cross-platform I2P-only BitTorrent client."),
 			widget.NewLabel("© 2024 Haris Khan"),
 		), parent)
 }

@@ -1,7 +1,7 @@
 package peer
 
 /*
-An I2P-only BitTorrent client.
+A cross-platform I2P-only BitTorrent client.
 Copyright (C) 2024 Haris Khan
 
 This program is free software: you can redistribute it and/or modify
