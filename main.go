@@ -442,7 +442,7 @@ func showDisclaimer(app fyne.App, parent fyne.Window) {
 	// Create the content for the disclaimer
 	disclaimerContent := container.NewVBox(
 		widget.NewLabelWithStyle("Disclaimer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things. But at the same time will be updated frequently, check back for updates!"),
+		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things.\nBut at the same time will be updated frequently, check back for updates!"),
 		widget.NewLabel("EepTorrent Copyright (C) 2024 Haris Khan\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it under certain conditions. See COPYING for details."),
 	)
 
