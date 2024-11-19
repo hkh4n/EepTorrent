@@ -66,6 +66,12 @@ type BlockInfo struct {
 }
 
 func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength int64, totalPieces int) *DownloadManager {
+	log.WithFields(logrus.Fields{
+		"total_length": totalLength,
+		"piece_length": pieceLength,
+		"total_pieces": totalPieces,
+	}).Debug("Initializing DownloadManager")
+
 	pieces := make([]*PieceStatus, totalPieces)
 	for i := 0; i < totalPieces; i++ {
 		// Calculate number of blocks per piece
@@ -82,6 +88,10 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 			Blocks:      make([]bool, blocks),
 			Completed:   false,
 		}
+		log.WithFields(logrus.Fields{
+			"piece_index":  i,
+			"total_blocks": blocks,
+		}).Debug("Initialized PieceStatus")
 	}
 	return &DownloadManager{
 		Writer:          writer,
@@ -99,6 +109,7 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 
 // IsFinished checks if the download is complete
 func (dm *DownloadManager) IsFinished() bool {
+	log.Debug("Checking if download is finished")
 	totalPieces := dm.Writer.Info().CountPieces()
 	completedPieces := 0
 
@@ -111,10 +122,23 @@ func (dm *DownloadManager) IsFinished() bool {
 		}
 	}
 
+	log.WithFields(logrus.Fields{
+		"completed_pieces": completedPieces,
+		"total_pieces":     totalPieces,
+	}).Debug("Download completion status")
+
 	return completedPieces == totalPieces
 }
 
 func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
+	piece := dm.Pieces[index]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+	log.WithFields(logrus.Fields{
+		"index":  index,
+		"offset": offset,
+		"length": len(b),
+	}).Debug("OnBlock called")
 	// Validate piece index
 	if int(index) >= len(dm.Pieces) {
 		log.WithFields(logrus.Fields{
@@ -123,11 +147,6 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		}).Error("Received block for invalid piece index")
 		return fmt.Errorf("invalid piece index: %d", index)
 	}
-
-	piece := dm.Pieces[index]
-
-	piece.Mu.Lock()
-	defer piece.Mu.Unlock()
 
 	// Calculate block number based on offset
 	blockNum := offset / downloader.BlockSize
@@ -158,6 +177,11 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 	// Update download progress
 	atomic.AddInt64(&dm.Downloaded, int64(n))
 	atomic.AddInt64(&dm.Left, -int64(n))
+
+	log.WithFields(logrus.Fields{
+		"downloaded": atomic.LoadInt64(&dm.Downloaded),
+		"left":       atomic.LoadInt64(&dm.Left),
+	}).Debug("Updated download progress")
 
 	// Mark block as received
 	piece.Blocks[blockNum] = true
@@ -211,20 +235,22 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 
 // isPieceComplete checks if all blocks in a piece are received
 func (dm *DownloadManager) isPieceComplete(piece *PieceStatus) bool {
+	log.WithField("piece_index", piece.Index).Debug("Checking if piece is complete")
 	for _, received := range piece.Blocks {
 		if !received {
 			return false
 		}
 	}
 	piece.Completed = true
+	log.WithField("piece_index", piece.Index).Info("Piece marked as completed")
 	return true
 }
 
 func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
-	log := log.WithField("peer", pc.RemoteAddr().String())
-
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log := log.WithField("peer", pc.RemoteAddr().String())
+	log.Debug("Checking if we need pieces from this peer")
 
 	for i := 0; i < len(dm.Bitfield); i++ { //dm.Bitfield.Length() -> len(dm.Bitfield)
 		if !dm.Bitfield.IsSet(uint32(i)) && pc.BitField.IsSet(uint32(i)) {
@@ -255,6 +281,7 @@ func (dm *DownloadManager) LogProgress() {
 
 // Progress calculates the current download progress percentage
 func (dm *DownloadManager) Progress() float64 {
+	log.Debug("Calculating download progress")
 	totalPieces := dm.Writer.Info().CountPieces()
 	completedPieces := 0
 	for i := 0; i < totalPieces; i++ {
@@ -262,13 +289,16 @@ func (dm *DownloadManager) Progress() float64 {
 			completedPieces++
 		}
 	}
-	return (float64(completedPieces) / float64(totalPieces)) * 100
+	progress := (float64(completedPieces) / float64(totalPieces)) * 100
+	log.WithField("progress_percentage", progress).Debug("Calculated progress")
+	return progress
 }
 
 // GetNextBlock retrieves the next block to request from a peer
 func (dm *DownloadManager) GetNextBlock() (uint32, uint32, error) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.Debug("Getting next block to request")
 
 	for i := 0; i < len(dm.Pieces); i++ {
 		piece := dm.Pieces[i]
@@ -278,13 +308,17 @@ func (dm *DownloadManager) GetNextBlock() (uint32, uint32, error) {
 				if !received {
 					offset := j * downloader.BlockSize
 					piece.Mu.Unlock()
+					log.WithFields(logrus.Fields{
+						"piece_index": piece.Index,
+						"offset":      offset,
+					}).Debug("Found next block to request")
 					return piece.Index, uint32(offset), nil
 				}
 			}
 		}
 		piece.Mu.Unlock()
 	}
-
+	log.Debug("No blocks to request")
 	return 0, 0, fmt.Errorf("no blocks to request")
 }
 
@@ -298,6 +332,7 @@ type PieceInfo struct {
 func (dm *DownloadManager) GetPiece(index uint32) (*PieceInfo, error) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.WithField("piece_index", index).Debug("Retrieving piece information")
 
 	if int(index) >= len(dm.Pieces) {
 		return nil, fmt.Errorf("invalid piece index: %d", index)
@@ -322,13 +357,16 @@ const EndgameThreshold = 10
 
 func (dm *DownloadManager) IsEndgame() bool {
 	remainingBlocks := atomic.LoadInt64(&dm.Left) / int64(downloader.BlockSize)
-	return remainingBlocks <= EndgameThreshold
+	isEndgame := remainingBlocks <= EndgameThreshold
+	log.WithField("is_endgame", isEndgame).Debug("Endgame status")
+	return isEndgame
 }
 
 func (dm *DownloadManager) GetAllRemainingBlocks() []BlockInfo {
 	var blocks []BlockInfo
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.Debug("Getting all remaining blocks")
 
 	for _, piece := range dm.Pieces {
 		if piece.Completed {
@@ -351,16 +389,21 @@ func (dm *DownloadManager) GetAllRemainingBlocks() []BlockInfo {
 					Offset:     offset,
 					Length:     uint32(length),
 				})
+				log.WithFields(logrus.Fields{
+					"piece_index": piece.Index,
+					"offset":      offset,
+					"length":      length,
+				}).Debug("Added remaining block")
 			}
 		}
 		piece.Mu.Unlock()
 	}
-
+	log.WithField("total_remaining_blocks", len(blocks)).Debug("Collected remaining blocks")
 	return blocks
 }
 
 func (dm *DownloadManager) RequestAllRemainingBlocks(peers []*pp.PeerConn) {
-	log.Info("Entering endgame mode, requesting all remaining blocks from all peers")
+	log.WithField("num_peers", len(peers)).Debug("Requesting all remaining blocks from peers")
 	for _, peer := range peers {
 		if peer.PeerChoked {
 			log.WithField("peer", peer.RemoteAddr().String()).Debug("Peer is choked, skipping")
@@ -396,6 +439,10 @@ func (dm *DownloadManager) RequestAllRemainingBlocks(peers []*pp.PeerConn) {
 func (dm *DownloadManager) IsBlockRequested(pieceIndex, offset uint32) bool {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.WithFields(logrus.Fields{
+		"piece_index": pieceIndex,
+		"offset":      offset,
+	}).Debug("Checking if block is already requested")
 	if blocks, exists := dm.RequestedBlocks[pieceIndex]; exists {
 		return blocks[offset]
 	}
@@ -405,6 +452,10 @@ func (dm *DownloadManager) IsBlockRequested(pieceIndex, offset uint32) bool {
 func (dm *DownloadManager) MarkBlockRequested(pieceIndex, offset uint32) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.WithFields(logrus.Fields{
+		"piece_index": pieceIndex,
+		"offset":      offset,
+	}).Debug("Marking block as requested")
 	if dm.RequestedBlocks[pieceIndex] == nil {
 		dm.RequestedBlocks[pieceIndex] = make(map[uint32]bool)
 	}
@@ -414,12 +465,14 @@ func (dm *DownloadManager) MarkBlockRequested(pieceIndex, offset uint32) {
 func (dm *DownloadManager) AddPeer(peer *pp.PeerConn) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.WithField("peer", peer.RemoteAddr().String()).Debug("Adding peer to DownloadManager")
 	dm.Peers = append(dm.Peers, peer)
 }
 
 func (dm *DownloadManager) RemovePeer(peer *pp.PeerConn) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.WithField("peer", peer.RemoteAddr().String()).Debug("Removing peer from DownloadManager")
 	for i, p := range dm.Peers {
 		if p == peer {
 			dm.Peers = append(dm.Peers[:i], dm.Peers[i+1:]...)
@@ -431,21 +484,25 @@ func (dm *DownloadManager) RemovePeer(peer *pp.PeerConn) {
 func (dm *DownloadManager) GetAllPeers() []*pp.PeerConn {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+	log.Debug("Retrieving all peers from DownloadManager")
 	return dm.Peers
 }
 
 func (dm *DownloadManager) FinalizeDownload() error {
+	log.Info("Finalizing download")
 	// Verify each piece
 	for _, piece := range dm.Pieces {
 		if !dm.VerifyPiece(piece.Index) { // Implement VerifyPiece
-			return fmt.Errorf("Piece %d verification failed", piece.Index)
+			log.Errorf("Piece %d verification failed", piece.Index)
+			return fmt.Errorf("piece %d verification failed", piece.Index)
 		}
 	}
 
 	// Close writer and perform cleanup
 	err := dm.Writer.Close()
 	if err != nil {
-		return fmt.Errorf("Failed to close writer: %v", err)
+		log.Errorf("Failed to close writer: %v\n", err)
+		return fmt.Errorf("failed to close writer: %v", err)
 	}
 
 	log.Info("Download completed and verified successfully")
@@ -454,6 +511,7 @@ func (dm *DownloadManager) FinalizeDownload() error {
 
 // VerifyPiece verifies the integrity of a downloaded piece.
 func (dm *DownloadManager) VerifyPiece(index uint32) bool {
+	log.WithField("piece_index", index).Debug("Verifying piece")
 	pieceData, err := dm.ReadPiece(index)
 	if err != nil {
 		log.WithError(err).Error("Failed to read piece for verification")
@@ -480,6 +538,7 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 
 // ReadPiece reads the data of a specific piece from disk.
 func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
+	log.WithField("piece_index", index).Debug("Reading piece from disk")
 	info := dm.Writer.Info()
 	pieceLength := info.PieceLength
 	totalPieces := info.CountPieces()
@@ -558,6 +617,6 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 			}
 		}
 	}
-
+	log.WithField("piece_index", index).Debug("Successfully read piece from disk")
 	return pieceData, nil
 }

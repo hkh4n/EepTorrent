@@ -63,12 +63,17 @@ func (ps *PeerState) MarkBlockRequested(pieceIndex, offset uint32) {
 	ps.RequestedBlocks[pieceIndex][offset] = true
 }
 func NewPeerState() *PeerState {
+	log.Debug("Initializing new PeerState")
 	return &PeerState{
 		RequestedBlocks: make(map[uint32]map[uint32]bool),
 	}
 }
 
 func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) error {
+	log.WithFields(logrus.Fields{
+		"peer_index": index,
+		"peer_hash":  fmt.Sprintf("%x", peerHash),
+	}).Debug("Attempting to connect to peer")
 	// Add connection timeout
 	_, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

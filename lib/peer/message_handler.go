@@ -38,7 +38,10 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 	})
 
 	log.WithField("msg.ExtendedPayload", fmt.Sprintf("%x", msg.ExtendedPayload)).Debug("Handling peer message")
-	log.Debug("Handling peer message")
+	log.WithFields(logrus.Fields{
+		"extended_id":     msg.ExtendedID,
+		"ExtendedPayload": fmt.Sprintf("%x", msg.ExtendedPayload),
+	}).Debug("Handling peer message in detail")
 
 	switch msg.Type {
 	case pp.MTypeBitField:
@@ -296,6 +299,10 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 			dm.CurrentPiece++
 			dm.CurrentOffset = 0
 		}
+	}
+
+	if firstErr != nil {
+		log.WithError(firstErr).Error("Errors occurred during block requests")
 	}
 
 	return firstErr

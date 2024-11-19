@@ -5,7 +5,7 @@ This is a work in progress and is considered **pre-alpha** software, meaning it 
 
 ### As of 11/19/2024, this is in crude working condition. It's advised NOT to use at this time. But you can out of curiosity.
 
-## Libraries Used
+## Core libraries used
 
 go-i2p-bt -> https://github.com/go-i2p/go-i2p-bt (fork of https://github.com/xgfone/go-bt)
 

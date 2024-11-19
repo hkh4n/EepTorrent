@@ -39,23 +39,27 @@ func GetPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	log.Info("Getting peers from simp tracker")
 	sam, err := sam3.NewSAM("127.0.0.1:7656")
 	if err != nil {
+		log.WithError(err).Error("Failed to create SAM session")
 		return nil, err
 	}
 	//defer sam.Close()
 
 	keys, err := sam.NewKeys()
 	if err != nil {
+		log.WithError(err).Error("Failed to generate SAM keys")
 		return nil, err
 	}
 	sessionName := fmt.Sprintf("getpeers-%d", os.Getpid())
 	stream, err := sam.NewPrimarySessionWithSignature(sessionName, keys, sam3.Options_Default, strconv.Itoa(7))
 	if err != nil {
+		log.WithError(err).Error("Failed to create SAM session with signature")
 		return nil, err
 	}
 	defer stream.Close()
 
 	simpAddr, err := sam.Lookup("wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p")
 	if err != nil {
+		log.WithError(err).Error("Failed to lookup simp tracker address")
 		return nil, err
 	}
 

@@ -36,6 +36,7 @@ type DownloadStats struct {
 }
 
 func NewDownloadStats() *DownloadStats {
+	log.Debug("Initializing DownloadStats")
 	return &DownloadStats{
 		StartTime:          time.Now(),
 		LastProgressUpdate: time.Now(),
