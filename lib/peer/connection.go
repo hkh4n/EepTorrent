@@ -37,6 +37,8 @@ import (
 	"time"
 )
 
+var log = logrus.StandardLogger()
+
 type PeerState struct {
 	RequestPending  bool
 	PendingRequests int32

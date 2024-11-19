@@ -55,7 +55,7 @@ import (
 "nfrjvknwcw47itotkzmk6mdlxmxfxsxhbhlr5ozhlsuavcogv4hq.b32.i2p // torrfreedom.i2p
 */
 var (
-	log          = logrus.New()
+	log          = logrus.StandardLogger()
 	maxRetries   = 20
 	initialDelay = 2 * time.Second
 )

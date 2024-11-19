@@ -33,7 +33,7 @@ import (
 	"strings"
 )
 
-var log = logrus.New()
+var log = logrus.StandardLogger()
 
 func GetPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	log.Info("Getting peers from simp tracker")

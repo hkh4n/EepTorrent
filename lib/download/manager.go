@@ -33,7 +33,7 @@ import (
 	"sync/atomic"
 )
 
-var log = logrus.New()
+var log = logrus.StandardLogger()
 
 type PieceStatus struct {
 	Index       uint32
@@ -131,6 +131,8 @@ func (dm *DownloadManager) IsFinished() bool {
 }
 
 func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
 	piece := dm.Pieces[index]
 	piece.Mu.Lock()
 	defer piece.Mu.Unlock()

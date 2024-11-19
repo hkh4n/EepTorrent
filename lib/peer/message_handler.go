@@ -27,8 +27,6 @@ import (
 	"sync/atomic"
 )
 
-var log = logrus.New()
-
 const BlockSize = 16384 // 16KB blocks
 
 func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager, ps *PeerState) error {
