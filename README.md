@@ -8,8 +8,11 @@ This is a work in progress and is considered **pre-alpha** software, meaning it 
 ## Libraries Used
 
 go-i2p-bt -> https://github.com/go-i2p/go-i2p-bt (fork of https://github.com/xgfone/go-bt)
+
 sam3 -> https://github.com/go-i2p/sam3
+
 i2pkeys -> https://github.com/go-i2p/i2pkeys
+
 
 ## Trademark and Logo Usage
 
