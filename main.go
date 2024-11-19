@@ -141,8 +141,7 @@ func main() {
 			log.SetLevel(logrus.PanicLevel)
 		}
 	})
-	loggingLevelSelect.SetSelected("Info")
-
+	loggingLevelSelect.SetSelected("Debug")
 	// Assemble the settings form
 	settingsForm := widget.NewForm(
 		widget.NewFormItem("Download Directory", container.NewHBox(downloadDirEntry, downloadDirButton)),
@@ -316,7 +315,7 @@ func main() {
 				writer := metainfo.NewWriter(outputPath, info, mode)
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
 				dm.DownloadDir = downloadDir
-				progressTicker := time.NewTicker(1 * time.Second)
+				progressTicker := time.NewTicker(10 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
 

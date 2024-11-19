@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
+	"github.com/go-i2p/i2pkeys"
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
@@ -74,8 +75,9 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 		"peer_index": index,
 		"peer_hash":  fmt.Sprintf("%x", peerHash),
 	}).Debug("Attempting to connect to peer")
-	// Add connection timeout
-	_, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+	// Create a context with timeout for the entire connection process
+	connCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	peerStream := i2p.GlobalStreamSession
@@ -85,32 +87,65 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	peerB32Addr := util.CleanBase32Address(peerHashBase32)
 
 	// Lookup the peer's Destination
-	peerDest, err := i2p.GlobalSAM.Lookup(peerB32Addr)
-	if err != nil {
-		log.Errorf("Failed to lookup peer %s: %v", peerB32Addr, err)
-		return fmt.Errorf("failed to lookup peer %s: %v", peerB32Addr, err)
-	} else {
-		log.Infof("Successfully looked up peer %s\n", peerB32Addr)
+	var peerDest i2pkeys.I2PAddr
+	lookupDone := make(chan error, 1)
+	go func() {
+		var err error
+		peerDest, err = i2p.GlobalSAM.Lookup(peerB32Addr)
+		lookupDone <- err
+	}()
+
+	select {
+	case <-connCtx.Done():
+		log.Errorf("Lookup timed out for peer %s", peerB32Addr)
+		return fmt.Errorf("lookup timed out for peer %s", peerB32Addr)
+	case err := <-lookupDone:
+		if err != nil {
+			log.Errorf("Failed to lookup peer %s: %v", peerB32Addr, err)
+			return fmt.Errorf("failed to lookup peer %s: %v", peerB32Addr, err)
+		} else {
+			log.Infof("Successfully looked up peer %s", peerB32Addr)
+		}
 	}
 
-	// Attempt to connect
-	peerConn, err := peerStream.Dial("tcp", peerDest.String())
-	if err != nil {
+	// Attempt to connect with timeout
+	connCh := make(chan net.Conn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := peerStream.Dial("tcp", peerDest.String())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		connCh <- conn
+	}()
+
+	var peerConn net.Conn
+	select {
+	case <-connCtx.Done():
+		log.Errorf("Connection timed out to peer %s", peerB32Addr)
+		return fmt.Errorf("connection timed out to peer %s", peerB32Addr)
+	case err := <-errCh:
 		log.Errorf("Failed to connect to peer %s: %v", peerB32Addr, err)
 		return fmt.Errorf("failed to connect to peer %s: %v", peerB32Addr, err)
-	} else {
-		fmt.Printf("Successfully connected to peer %s\n", peerB32Addr)
+	case peerConn = <-connCh:
+		log.Infof("Successfully connected to peer %s", peerB32Addr)
 	}
+
 	defer peerConn.Close()
+
+	// Set read/write deadlines on the connection
+	deadline := time.Now().Add(30 * time.Second)
+	peerConn.SetDeadline(deadline)
 
 	// Perform the BitTorrent handshake
 	peerId := util.GeneratePeerIdMeta()
-	err = performHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
+	err := performHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
 	if err != nil {
 		log.Errorf("Handshake with peer %s failed: %v", peerB32Addr, err)
 		return fmt.Errorf("failed to handshake with peer %s: %v", peerB32Addr, err)
 	} else {
-		fmt.Printf("Handshake successful with peer: %s\n", peerB32Addr)
+		log.Infof("Handshake successful with peer: %s", peerB32Addr)
 	}
 
 	// Wrap the connection with pp.PeerConn
@@ -127,6 +162,11 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 }
 
 func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
+	deadline := time.Now().Add(15 * time.Second)
+	err := pc.Conn.SetDeadline(deadline)
+	if err != nil {
+		return fmt.Errorf("failed to set deadline: %v", err)
+	}
 	//log.WithField("peer", pc.RemoteAddr().String()).Debug()
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	defer pc.Close()
@@ -137,7 +177,7 @@ func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 	defer dm.RemovePeer(pc)
 
 	// Send BitField if needed
-	err := pc.SendBitfield(dm.Bitfield)
+	err = pc.SendBitfield(dm.Bitfield)
 	if err != nil {
 		log.WithError(err).Error("Failed to send Bitfield")
 		return fmt.Errorf("Failed to send Bitfield: %v", err)
@@ -180,6 +220,12 @@ func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 }
 
 func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
+	// Set deadline
+	deadline := time.Now().Add(15 * time.Second)
+	err := conn.SetDeadline(deadline)
+	if err != nil {
+		return fmt.Errorf("failed to set deadline: %v", err)
+	}
 	log.WithFields(logrus.Fields{
 		"peer_id":   peerId,
 		"info_hash": fmt.Sprintf("%x", infoHash),
@@ -199,7 +245,7 @@ func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	log.WithField("handshake_bytes", fmt.Sprintf("%x", handshake[:])).Debug("Sending handshake")
 
 	// Send handshake
-	_, err := conn.Write(handshake)
+	_, err = conn.Write(handshake)
 	if err != nil {
 		log.WithError(err).Error("Failed to send handshake")
 		return fmt.Errorf("failed to send handshake: %v", err)
