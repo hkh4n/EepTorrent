@@ -71,6 +71,9 @@ func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("EepTorrent")
 
+	// Show disclaimer
+	showDisclaimer(myApp, myWindow)
+
 	// Create UI components for the main content
 	progressBar := widget.NewProgressBar()
 	statusLabel := widget.NewLabel("Ready")
@@ -430,4 +433,33 @@ func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.
 	}
 
 	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
+}
+
+func showDisclaimer(app fyne.App, parent fyne.Window) {
+	// Create the content for the disclaimer
+	disclaimerContent := container.NewVBox(
+		widget.NewLabelWithStyle("Disclaimer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things. But at the same time will be updated frequently, check back for updates!"),
+		widget.NewLabel("EepTorrent Copyright (C) 2024 Haris Khan\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it under certain conditions. See COPYING for details."),
+	)
+
+	// Create the custom confirmation dialog
+	dialog := dialog.NewCustomConfirm(
+		"Experimental Software",
+		"Accept",
+		"Decline",
+		disclaimerContent,
+		func(accepted bool) {
+			if !accepted {
+				// User declined the disclaimer; exit the application
+				app.Quit()
+			}
+			// If accepted, do nothing and allow the application to continue
+		},
+		parent,
+	)
+
+	// Make the dialog modal (prevents interaction with other windows until closed)
+	dialog.SetDismissText("Decline")
+	dialog.Show()
 }
