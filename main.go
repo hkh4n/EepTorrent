@@ -69,6 +69,8 @@ func init() {
 func main() {
 	// Initialize the Fyne application
 	myApp := app.New()
+	myApp.SetIcon(util.ResourceLogo32Png)
+
 	myWindow := myApp.NewWindow("EepTorrent")
 
 	// Show disclaimer
