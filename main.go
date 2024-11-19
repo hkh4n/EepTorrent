@@ -28,10 +28,12 @@ import (
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
+	"image/color"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -73,6 +75,14 @@ func main() {
 
 	myWindow := myApp.NewWindow("EepTorrent")
 
+	//Set background
+	// Create the background image
+	background := canvas.NewImageFromResource(util.ResourceLogoPng)
+	background.FillMode = canvas.ImageFillContain // Adjust as needed: FillOriginal, FillContain, FillFill, FillStretch
+
+	// Optionally, set a semi-transparent overlay if needed
+	overlay := canvas.NewRectangle(color.NRGBA{0, 0, 0, 100}) // Semi-transparent black
+	overlay.SetMinSize(myWindow.Canvas().Size())
 	// Show disclaimer
 	showDisclaimer(myApp, myWindow)
 
@@ -161,6 +171,15 @@ func main() {
 
 	// Layout the UI components with side menu
 	content := container.NewBorder(nil, nil, sideMenu, nil, mainContent)
+	/*
+		content := container.NewStack(
+			background,
+			sideMenu,
+			mainContent, // Your main UI components
+		)
+
+	*/
+
 	myWindow.SetContent(content)
 	myWindow.Resize(fyne.NewSize(800, 600))
 
