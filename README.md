@@ -1,9 +1,7 @@
 ![Alt text](images/EepTorrentLogo.png)
 
-
-## TODO
-- [ ] PEX
-- [ ] Download
+## Disclaimer
+This is a work in progress and is considered **pre-alpha** software, meaning it doesn't even have the core functions yet.
 
 ## Trademark and Logo Usage
 
