@@ -41,23 +41,21 @@ import (
 	"os"
 )
 
-/* //Trackers
+/*
+	//Trackers
+
 String convertedurl = url.replace("ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p", "tracker2.postman.i2p")
 .replace("w7tpbzncbcocrqtwwm3nezhnnsw4ozadvi2hmvzdhrqzfxfum7wa.b32.i2p", "opentracker.dg2.i2p")
 .replace("afuuortfaqejkesne272krqvmafn65mhls6nvcwv3t7l2ic2p4kq.b32.i2p", "lyoko.i2p")
 .replace("s5ikrdyjwbcgxmqetxb3nyheizftms7euacuub2hic7defkh3xhq.b32.i2p", "tracker.thebland.i2p")
 .replace("nfrjvknwcw47itotkzmk6mdlxmxfxsxhbhlr5ozhlsuavcogv4hq.b32.i2p", "torrfreedom.i2p")
 .replace("http://", "");
-
 */
-/*
-p6zlufbvhcn426427wiaylzejdwg4hbdlrccst6owijhlvgalb7a.b32.i2p
-cpfrxck5c4stxqrrjsp5syqvhfbtmc2jebyiyuv4hwjnhbxopuyq.b32.i2p
-6p225yhqnr2t3kjdh5vy3h2bsv5unfip4777dqfk7qv2ihluf6va.b32.i2p+
-cofho7nrtwu47mzejuwk6aszk7zj7aox6b5v2ybdhh5ykrz64jka.b32.i2p+
-
-*/
-var log = logrus.New()
+var (
+	log          = logrus.New()
+	maxRetries   = 5
+	initialDelay = 2 * time.Second
+)
 
 func init() {
 	// Configure logrus
@@ -344,7 +342,8 @@ func main() {
 						defer wg.Done()
 						stats.ConnectionStarted()
 						defer stats.ConnectionEnded()
-						peer.ConnectToPeer(ctx, peerHash, index, &mi, dm)
+						//peer.ConnectToPeer(ctx, peerHash, index, &mi, dm)
+						retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
 					}(peers[i], i)
 				}
 
@@ -392,39 +391,43 @@ func showAboutDialog(app fyne.App, parent fyne.Window) {
 		), parent)
 }
 
-/*
-	func requestNextBlock(pc *pp.PeerConn, dm *downloadManager) error {
-		if dm.plength <= 0 {
-			dm.pindex++
-			if dm.IsFinished() {
-				return nil
-			}
+// retryConnect attempts to connect to a peer with retry logic.
+// maxRetries: Maximum number of retry attempts.
+// initialDelay: Initial delay before the first retry.
+func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, maxRetries int, initialDelay time.Duration) {
+	delay := initialDelay
 
-			dm.poffset = 0
-			dm.plength = dm.writer.Info().Piece(int(dm.pindex)).Length()
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			log.Infof("Context cancelled, stopping retries for peer %d", index)
+			return
+		default:
 		}
 
-		// Check if peer has the piece
-		if !pc.BitField.IsSet(dm.pindex) {
-			// Try next piece
-			dm.pindex++
-			dm.poffset = 0
-			return nil
-		}
-
-		// Calculate block size
-		length := uint32(BlockSize)
-		if length > uint32(dm.plength) {
-			length = uint32(dm.plength)
-		}
-
-		// Request the block
-		err := pc.SendRequest(dm.pindex, dm.poffset, length)
+		err := peer.ConnectToPeer(ctx, peerHash, index, mi, dm)
 		if err == nil {
-			dm.doing = true
-			fmt.Printf("\rRequesting piece %d (%d/%d), offset %d, length %d",
-				dm.pindex, dm.pindex+1, dm.writer.Info().CountPieces(), dm.poffset, length)
+			log.Infof("Successfully connected to peer %d on attempt %d", index, attempt)
+			return
 		}
-		return err
+
+		log.Errorf("Attempt %d to connect to peer %d failed: %v", attempt, index, err)
+
+		if attempt < maxRetries {
+			log.Infof("Retrying to connect to peer %d after %v...", index, delay)
+			select {
+			case <-ctx.Done():
+				log.Infof("Context cancelled during delay, stopping retries for peer %d", index)
+				return
+			case <-time.After(delay):
+				// Exponential backoff: double the delay for the next attempt
+				delay *= 2
+				if delay > 60*time.Second {
+					delay = 60 * time.Second // Cap the delay to 60 seconds
+				}
+			}
+		}
 	}
-*/
+
+	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
+}

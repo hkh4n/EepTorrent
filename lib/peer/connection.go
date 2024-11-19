@@ -68,7 +68,7 @@ func NewPeerState() *PeerState {
 	}
 }
 
-func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) {
+func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) error {
 	// Add connection timeout
 	_, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -82,16 +82,17 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	// Lookup the peer's Destination
 	peerDest, err := i2p.GlobalSAM.Lookup(peerB32Addr)
 	if err != nil {
-		log.Fatalf("Failed to lookup peer %s: %v", peerB32Addr, err)
+		log.Errorf("Failed to lookup peer %s: %v", peerB32Addr, err)
+		return fmt.Errorf("failed to lookup peer %s: %v", peerB32Addr, err)
 	} else {
-		log.Printf("Successfully looked up peer %s\n", peerB32Addr)
+		log.Infof("Successfully looked up peer %s\n", peerB32Addr)
 	}
 
 	// Attempt to connect
 	peerConn, err := peerStream.Dial("tcp", peerDest.String())
 	if err != nil {
-		log.Fatalf("Failed to connect to peer %s: %v", peerB32Addr, err)
-		return
+		log.Errorf("Failed to connect to peer %s: %v", peerB32Addr, err)
+		return fmt.Errorf("failed to connect to peer %s: %v", peerB32Addr, err)
 	} else {
 		fmt.Printf("Successfully connected to peer %s\n", peerB32Addr)
 	}
@@ -101,7 +102,8 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	peerId := util.GeneratePeerIdMeta()
 	err = performHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
 	if err != nil {
-		log.Fatalf("Handshake with peer %s failed: %v", peerB32Addr, err)
+		log.Errorf("Handshake with peer %s failed: %v", peerB32Addr, err)
+		return fmt.Errorf("failed to handshake with peer %s: %v", peerB32Addr, err)
 	} else {
 		fmt.Printf("Handshake successful with peer: %s\n", peerB32Addr)
 	}
@@ -113,8 +115,10 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	// Start the message handling loop
 	err = handlePeerConnection(ctx, pc, dm)
 	if err != nil {
-		log.Printf("Peer connection error: %v", err)
+		log.Errorf("Peer connection error: %v", err)
+		return fmt.Errorf("peer connection error: %v", err)
 	}
+	return nil
 }
 
 func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
