@@ -25,6 +25,7 @@ import (
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
 	"eeptorrent/lib/util"
+	"eeptorrent/lib/util/logo"
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -71,13 +72,13 @@ func init() {
 func main() {
 	// Initialize the Fyne application
 	myApp := app.New()
-	myApp.SetIcon(util.ResourceLogo32Png)
+	myApp.SetIcon(logo.ResourceLogo32Png)
 
 	myWindow := myApp.NewWindow("EepTorrent")
 
 	//Set background
 	// Create the background image
-	background := canvas.NewImageFromResource(util.ResourceLogoPng)
+	background := canvas.NewImageFromResource(logo.ResourceLogoPng)
 	background.FillMode = canvas.ImageFillContain // Adjust as needed: FillOriginal, FillContain, FillFill, FillStretch
 
 	// Optionally, set a semi-transparent overlay if needed
