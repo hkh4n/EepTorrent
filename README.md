@@ -1,7 +1,7 @@
 ![Alt text](images/EepTorrentLogo.png)
 
 ## Disclaimer
-This is a work in progress and is considered **pre-alpha** software, meaning it doesn't even have the core functions yet.
+This is a work in progress and is considered **pre-alpha** software, meaning it doesn't even have the core functions yet. Use at your own risk and be sure to update frequently.
 
 ## Trademark and Logo Usage
 
