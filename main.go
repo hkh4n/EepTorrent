@@ -24,6 +24,7 @@ import (
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
+	"eeptorrent/lib/util"
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -385,10 +386,11 @@ func showError(title string, err error, parent fyne.Window) {
 
 // Helper function to show the About dialog
 func showAboutDialog(app fyne.App, parent fyne.Window) {
+	gitCommitDisplay := util.GitCommit
 	dialog.ShowCustom("About EepTorrent", "Close",
 		container.NewVBox(
 			widget.NewLabelWithStyle("EepTorrent", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-			widget.NewLabel("Version 0.0.1"),
+			widget.NewLabel(fmt.Sprintf("Version: %s-%s", util.Version, gitCommitDisplay)),
 			widget.NewLabel("An I2P-only BitTorrent client."),
 			widget.NewLabel("© 2024 Haris Khan"),
 		), parent)
