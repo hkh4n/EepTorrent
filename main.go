@@ -128,7 +128,7 @@ func main() {
 			log.SetLevel(logrus.PanicLevel)
 		}
 	})
-	loggingLevelSelect.SetSelected("Info")
+	loggingLevelSelect.SetSelected("Debug")
 
 	// Assemble the settings form
 	settingsForm := widget.NewForm(

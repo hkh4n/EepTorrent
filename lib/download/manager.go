@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 )
 
-var log = logrus.New()
+var log = logrus.StandardLogger()
 
 type PieceStatus struct {
 	Index       uint32

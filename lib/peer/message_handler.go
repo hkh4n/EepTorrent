@@ -28,7 +28,7 @@ import (
 	"sync/atomic"
 )
 
-var log = logrus.New()
+var log = logrus.StandardLogger()
 
 const BlockSize = 16384 // 16KB blocks
 

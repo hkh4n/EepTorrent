@@ -22,9 +22,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
-	"log"
+	"github.com/sirupsen/logrus"
 	"strings"
 )
+
+var log = logrus.StandardLogger()
 
 // Helper function to URL-encode binary data as per BitTorrent protocol
 func UrlEncodeBytes(b []byte) string {
