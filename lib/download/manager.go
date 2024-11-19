@@ -19,11 +19,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/downloader"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
+	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
@@ -39,15 +44,25 @@ type PieceStatus struct {
 }
 
 type DownloadManager struct {
-	Writer        metainfo.Writer
-	Pieces        []*PieceStatus
-	Bitfield      pp.BitField
-	Downloaded    int64
-	Uploaded      int64
-	Left          int64
-	Mu            sync.Mutex
-	CurrentPiece  uint32
-	CurrentOffset uint32
+	Writer          metainfo.Writer
+	Pieces          []*PieceStatus
+	Bitfield        pp.BitField
+	Downloaded      int64
+	Uploaded        int64
+	Left            int64
+	Mu              sync.Mutex
+	CurrentPiece    uint32
+	CurrentOffset   uint32
+	RequestedBlocks map[uint32]map[uint32]bool // piece index -> offset -> requested
+	Peers           []*pp.PeerConn
+	DownloadDir     string
+}
+
+// BlockInfo represents a specific block within a piece.
+type BlockInfo struct {
+	PieceIndex uint32
+	Offset     uint32
+	Length     uint32
 }
 
 func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength int64, totalPieces int) *DownloadManager {
@@ -69,10 +84,16 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		}
 	}
 	return &DownloadManager{
-		Writer:   writer,
-		Pieces:   pieces,
-		Bitfield: pp.NewBitField(totalPieces),
-		Left:     totalLength,
+		Writer:          writer,
+		Pieces:          pieces,
+		Bitfield:        pp.NewBitField(totalPieces),
+		Downloaded:      0,
+		Uploaded:        0,
+		Left:            totalLength,
+		CurrentPiece:    0,
+		CurrentOffset:   0,
+		RequestedBlocks: make(map[uint32]map[uint32]bool), // Initialize RequestedBlocks
+		Peers:           make([]*pp.PeerConn, 0),          // Initialize Peers
 	}
 }
 
@@ -149,6 +170,35 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 			"total_pieces": dm.Writer.Info().CountPieces(),
 			"progress":     fmt.Sprintf("%.2f%%", float64(index+1)/float64(dm.Writer.Info().CountPieces())*100),
 		}).Info("Completed piece")
+	}
+
+	// After marking the block as received and checking piece completion
+	if dm.IsEndgame() && atomic.LoadInt64(&dm.Left) <= 0 {
+		log.Info("Endgame completed, finalizing download")
+		dm.RequestAllRemainingBlocks(dm.GetAllPeers())
+		if dm.IsFinished() {
+			err := dm.FinalizeDownload()
+			if err != nil {
+				log.WithError(err).Error("Failed to finalize download")
+				return err
+			}
+			// Notify user
+		}
+	}
+
+	// Verify the piece if it's completed
+	if !piece.Completed && dm.isPieceComplete(piece) {
+		if dm.VerifyPiece(index) {
+			dm.Bitfield.Set(index)
+			log.WithFields(logrus.Fields{
+				"piece_index": index,
+			}).Info("Piece verified and added to bitfield")
+		} else {
+			log.WithFields(logrus.Fields{
+				"piece_index": index,
+			}).Error("Piece verification failed")
+			// Handle verification failure (e.g., mark piece as incomplete, request again)
+		}
 	}
 
 	log.WithFields(logrus.Fields{
@@ -266,4 +316,248 @@ func (dm *DownloadManager) GetPiece(index uint32) (*PieceInfo, error) {
 		Index:       piece.Index,
 		PieceLength: int32(dm.Writer.Info().PieceLength),
 	}, nil
+}
+
+const EndgameThreshold = 10
+
+func (dm *DownloadManager) IsEndgame() bool {
+	remainingBlocks := atomic.LoadInt64(&dm.Left) / int64(downloader.BlockSize)
+	return remainingBlocks <= EndgameThreshold
+}
+
+func (dm *DownloadManager) GetAllRemainingBlocks() []BlockInfo {
+	var blocks []BlockInfo
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+
+	for _, piece := range dm.Pieces {
+		if piece.Completed {
+			continue
+		}
+		piece.Mu.Lock()
+		for i, received := range piece.Blocks {
+			if !received {
+				offset := uint32(i) * downloader.BlockSize
+				length := downloader.BlockSize
+
+				// Adjust length for the last block in the piece
+				pieceLength := dm.Writer.Info().PieceLength
+				if (offset + uint32(length)) > uint32(pieceLength) { // Will converting cause issues?
+					length = int(pieceLength - int64(offset))
+				}
+
+				blocks = append(blocks, BlockInfo{
+					PieceIndex: piece.Index,
+					Offset:     offset,
+					Length:     uint32(length),
+				})
+			}
+		}
+		piece.Mu.Unlock()
+	}
+
+	return blocks
+}
+
+func (dm *DownloadManager) RequestAllRemainingBlocks(peers []*pp.PeerConn) {
+	log.Info("Entering endgame mode, requesting all remaining blocks from all peers")
+	for _, peer := range peers {
+		if peer.PeerChoked {
+			log.WithField("peer", peer.RemoteAddr().String()).Debug("Peer is choked, skipping")
+			continue
+		}
+		for _, block := range dm.GetAllRemainingBlocks() {
+			// Check if the peer has the piece
+			if peer.BitField.IsSet(block.PieceIndex) {
+				// Check if the block has already been requested
+				if !dm.IsBlockRequested(block.PieceIndex, block.Offset) {
+					err := peer.SendRequest(block.PieceIndex, block.Offset, block.Length)
+					if err != nil {
+						log.WithFields(logrus.Fields{
+							"peer":        peer.RemoteAddr().String(),
+							"piece_index": block.PieceIndex,
+							"offset":      block.Offset,
+						}).WithError(err).Error("Failed to send endgame request")
+						continue
+					}
+					// Mark the block as requested
+					dm.MarkBlockRequested(block.PieceIndex, block.Offset)
+					log.WithFields(logrus.Fields{
+						"peer":        peer.RemoteAddr().String(),
+						"piece_index": block.PieceIndex,
+						"offset":      block.Offset,
+					}).Debug("Sent endgame block request")
+				}
+			}
+		}
+	}
+}
+
+func (dm *DownloadManager) IsBlockRequested(pieceIndex, offset uint32) bool {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+	if blocks, exists := dm.RequestedBlocks[pieceIndex]; exists {
+		return blocks[offset]
+	}
+	return false
+}
+
+func (dm *DownloadManager) MarkBlockRequested(pieceIndex, offset uint32) {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+	if dm.RequestedBlocks[pieceIndex] == nil {
+		dm.RequestedBlocks[pieceIndex] = make(map[uint32]bool)
+	}
+	dm.RequestedBlocks[pieceIndex][offset] = true
+}
+
+func (dm *DownloadManager) AddPeer(peer *pp.PeerConn) {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+	dm.Peers = append(dm.Peers, peer)
+}
+
+func (dm *DownloadManager) RemovePeer(peer *pp.PeerConn) {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+	for i, p := range dm.Peers {
+		if p == peer {
+			dm.Peers = append(dm.Peers[:i], dm.Peers[i+1:]...)
+			break
+		}
+	}
+}
+
+func (dm *DownloadManager) GetAllPeers() []*pp.PeerConn {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+	return dm.Peers
+}
+
+func (dm *DownloadManager) FinalizeDownload() error {
+	// Verify each piece
+	for _, piece := range dm.Pieces {
+		if !dm.VerifyPiece(piece.Index) { // Implement VerifyPiece
+			return fmt.Errorf("Piece %d verification failed", piece.Index)
+		}
+	}
+
+	// Close writer and perform cleanup
+	err := dm.Writer.Close()
+	if err != nil {
+		return fmt.Errorf("Failed to close writer: %v", err)
+	}
+
+	log.Info("Download completed and verified successfully")
+	return nil
+}
+
+// VerifyPiece verifies the integrity of a downloaded piece.
+func (dm *DownloadManager) VerifyPiece(index uint32) bool {
+	pieceData, err := dm.ReadPiece(index)
+	if err != nil {
+		log.WithError(err).Error("Failed to read piece for verification")
+		return false
+	}
+
+	expectedHash := dm.Writer.Info().Pieces[index] // Assuming Pieces[index] is a byte slice (hash)
+	actualHash := sha1.Sum(pieceData)              // Import "crypto/sha1"
+
+	if !bytes.Equal(expectedHash[:], actualHash[:]) {
+		log.WithFields(logrus.Fields{
+			"piece_index":   index,
+			"expected_hash": fmt.Sprintf("%x", expectedHash),
+			"actual_hash":   fmt.Sprintf("%x", actualHash),
+		}).Error("Piece hash mismatch")
+		return false
+	}
+
+	log.WithFields(logrus.Fields{
+		"piece_index": index,
+	}).Info("Piece verified successfully")
+	return true
+}
+
+// ReadPiece reads the data of a specific piece from disk.
+func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
+	info := dm.Writer.Info()
+	pieceLength := info.PieceLength
+	totalPieces := info.CountPieces()
+
+	if int(index) >= totalPieces {
+		return nil, fmt.Errorf("invalid piece index: %d", index)
+	}
+
+	// Determine the actual length of the piece (handle the last piece)
+	var actualLength int64
+	if int(index) == totalPieces-1 {
+		remaining := info.TotalLength() - int64(index)*pieceLength
+		if remaining < pieceLength {
+			actualLength = remaining
+		} else {
+			actualLength = pieceLength
+		}
+	} else {
+		actualLength = pieceLength
+	}
+
+	pieceData := make([]byte, actualLength)
+
+	if len(info.Files) == 0 {
+		// Single-file torrent
+		filePath := info.Name
+		//filePath := filepath.Join(dm.DownloadDir, fileInfo.Path(info))
+		file, err := os.Open(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
+		}
+		defer file.Close()
+
+		_, err = file.ReadAt(pieceData, int64(index)*pieceLength)
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("failed to read piece %d: %v", index, err)
+		}
+	} else {
+		// Multi-file torrent
+		var currentOffset int64 = 0
+		for _, fileInfo := range info.Files {
+			filePath := filepath.Join(dm.DownloadDir, fileInfo.Path(info))
+			fileSize := fileInfo.Length
+
+			if currentOffset+fileSize < int64(index)*pieceLength {
+				currentOffset += fileSize
+				continue
+			}
+
+			file, err := os.Open(filePath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
+			}
+
+			defer file.Close()
+
+			pieceStart := int64(index)*pieceLength - currentOffset
+			toRead := actualLength
+			if pieceStart+toRead > fileSize {
+				toRead = fileSize - pieceStart
+			}
+
+			n, err := file.ReadAt(pieceData[:toRead], pieceStart)
+			if err != nil && err != io.EOF {
+				return nil, fmt.Errorf("failed to read piece %d from file %s: %v", index, filePath, err)
+			}
+
+			if int64(n) != toRead {
+				return nil, fmt.Errorf("incomplete read for piece %d from file %s: expected %d bytes, got %d bytes", index, filePath, toRead, n)
+			}
+
+			currentOffset += fileSize
+
+			if toRead >= actualLength {
+				break
+			}
+		}
+	}
+
+	return pieceData, nil
 }

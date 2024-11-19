@@ -49,10 +49,17 @@ func CleanBase32Address(addr string) string {
 
 func GeneratePeerIdMeta() metainfo.Hash {
 	var peerId metainfo.Hash
-	_, err := rand.Read(peerId[:])
+
+	// Define the prefix (8 bytes)
+	prefix := "-ET0001-"
+	copy(peerId[:8], prefix)
+
+	// Generate 12 random bytes for uniqueness
+	_, err := rand.Read(peerId[8:])
 	if err != nil {
 		log.Fatalf("Failed to generate peer ID: %v", err)
 	}
+
 	return peerId
 }
 

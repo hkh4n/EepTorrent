@@ -56,7 +56,7 @@ import (
 */
 var (
 	log          = logrus.New()
-	maxRetries   = 5
+	maxRetries   = 20
 	initialDelay = 2 * time.Second
 )
 
@@ -315,6 +315,7 @@ func main() {
 
 				writer := metainfo.NewWriter(outputPath, info, mode)
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
+				dm.DownloadDir = downloadDir
 				progressTicker := time.NewTicker(1 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel

@@ -180,7 +180,7 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 		//log.Debug("Received extended message, which is currently not supported")
 		if msg.ExtendedID == 0 { // Extended handshake
 			handshake := pp.ExtendedHandshakeMsg{
-				V: "EepTorrent 0.0.1",
+				V: "EepTorrent 0.0.0",
 				M: make(map[string]uint8),
 			}
 			handshake.M["ut_metadata"] = 1

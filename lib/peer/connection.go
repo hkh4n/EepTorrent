@@ -110,7 +110,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 
 	// Wrap the connection with pp.PeerConn
 	pc := pp.NewPeerConn(peerConn, peerId, mi.InfoHash())
-	pc.Timeout = 120 * time.Second
+	pc.Timeout = 30 * time.Second
 
 	// Start the message handling loop
 	err = handlePeerConnection(ctx, pc, dm)
@@ -127,6 +127,9 @@ func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 	defer pc.Close()
 
 	ps := NewPeerState() // Initialize per-peer state
+
+	dm.AddPeer(pc)
+	defer dm.RemovePeer(pc)
 
 	// Send BitField if needed
 	err := pc.SendBitfield(dm.Bitfield)
