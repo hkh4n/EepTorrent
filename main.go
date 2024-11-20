@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
@@ -79,6 +80,11 @@ func main() {
 	// Variables to manage download state
 	var torrents []*Torrent
 	var torrentsMutex sync.Mutex
+	var torrentList *widget.List
+
+	// Load the background image
+	backgroundImage := canvas.NewImageFromFile("../images/Logo.png") // Replace with your image file path
+	backgroundImage.FillMode = canvas.ImageFillStretch               // Adjust the fill mode as needed
 
 	// Create UI components for settings
 	downloadDirEntry := widget.NewEntry()
@@ -127,8 +133,8 @@ func main() {
 		widget.NewLabelWithStyle("Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		settingsForm,
 	)
-	var torrentList *widget.List
-	// Create the torrent list
+
+	// Initialize the torrent list
 	torrentList = widget.NewList(
 		func() int {
 			torrentsMutex.Lock()
@@ -238,7 +244,13 @@ func main() {
 	// Layout the UI components with side menu
 	content := container.NewBorder(nil, nil, sideMenu, nil, mainContent)
 
-	myWindow.SetContent(content)
+	// Create a container with the background image and the content
+	backgroundContainer := container.NewMax(
+		backgroundImage,
+		content,
+	)
+
+	myWindow.SetContent(backgroundContainer)
 	myWindow.Resize(fyne.NewSize(800, 600))
 
 	// Add a menu bar
@@ -260,8 +272,10 @@ func main() {
 	)
 	myWindow.SetMainMenu(menu)
 
+	// Show disclaimer
 	showDisclaimer(myApp, myWindow)
 
+	// Show the window and start the GUI event loop
 	myWindow.ShowAndRun()
 }
 
