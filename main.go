@@ -358,16 +358,64 @@ func main() {
 				// Get peers from tracker
 				//peers, err := tracker.GetPeersFromSimpTracker(&mi)
 				//peers, err := tracker.GetPeersFromPostmanTracker(&mi)
-				peers, err := tracker.GetPeersFromPostmanTracker(&mi)
+				/*
+					peers, err := tracker.GetPeersFromPostmanTracker(&mi)
+					if err != nil {
+						showError("Failed to get peers from tracker", err, myWindow)
+						return
+					}
+
+				*/
+				var allPeers [][]byte
+				peersPostman, err := tracker.GetPeersFromPostmanTracker(&mi)
 				if err != nil {
-					showError("Failed to get peers from tracker", err, myWindow)
-					return
+					log.WithError(err).Warn("Failed to get peers from Postman Tracker")
+				} else {
+					allPeers = append(allPeers, peersPostman...)
 				}
 
+				peersSimp, err := tracker.GetPeersFromSimpTracker(&mi)
+				if err != nil {
+					log.WithError(err).Warn("Failed to get peers from Simp Tracker")
+				} else {
+					allPeers = append(allPeers, peersSimp...)
+				}
+
+				peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi)
+				if err != nil {
+					log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
+				} else {
+					allPeers = append(allPeers, peersDg2...)
+				}
+
+				if len(allPeers) == 0 {
+					showError("Failed to get peers from any tracker", fmt.Errorf("No peers found"), myWindow)
+					return
+				}
+				uniquePeers := removeDuplicatePeers(allPeers)
+
 				// Limit the number of connections based on user settings
+				/*
+					maxPeers := maxConnections
+					if len(peers) < maxPeers {
+						maxPeers = len(peers)
+					}
+
+					for i := 0; i < maxPeers; i++ {
+						wg.Add(1)
+						go func(peerHash []byte, index int) {
+							defer wg.Done()
+							stats.ConnectionStarted()
+							defer stats.ConnectionEnded()
+							//peer.ConnectToPeer(ctx, peerHash, index, &mi, dm)
+							retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
+						}(peers[i], i)
+					}
+
+				*/
 				maxPeers := maxConnections
-				if len(peers) < maxPeers {
-					maxPeers = len(peers)
+				if len(uniquePeers) < maxPeers {
+					maxPeers = len(uniquePeers)
 				}
 
 				for i := 0; i < maxPeers; i++ {
@@ -376,9 +424,8 @@ func main() {
 						defer wg.Done()
 						stats.ConnectionStarted()
 						defer stats.ConnectionEnded()
-						//peer.ConnectToPeer(ctx, peerHash, index, &mi, dm)
 						retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
-					}(peers[i], i)
+					}(uniquePeers[i], i)
 				}
 
 				wg.Wait()
@@ -465,6 +512,19 @@ func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.
 	}
 
 	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
+}
+func removeDuplicatePeers(peers [][]byte) [][]byte {
+	peerSet := make(map[string]struct{})
+	uniquePeers := make([][]byte, 0, len(peers))
+
+	for _, peer := range peers {
+		peerStr := string(peer)
+		if _, exists := peerSet[peerStr]; !exists {
+			peerSet[peerStr] = struct{}{}
+			uniquePeers = append(uniquePeers, peer)
+		}
+	}
+	return uniquePeers
 }
 
 func showDisclaimer(app fyne.App, parent fyne.Window) {
