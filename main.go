@@ -114,15 +114,17 @@ func main() {
 
 	maxConnectionsEntry := widget.NewEntry()
 	maxConnectionsEntry.SetText("50") // Default value
+	/*
+		portEntry := widget.NewEntry()
+		portEntry.SetText("6881") // Default port
 
-	portEntry := widget.NewEntry()
-	portEntry.SetText("6881") // Default port
+		uploadLimitEntry := widget.NewEntry()
+		uploadLimitEntry.SetText("0") // 0 means unlimited
 
-	uploadLimitEntry := widget.NewEntry()
-	uploadLimitEntry.SetText("0") // 0 means unlimited
+		downloadLimitEntry := widget.NewEntry()
+		downloadLimitEntry.SetText("0") // 0 means unlimited
 
-	downloadLimitEntry := widget.NewEntry()
-	downloadLimitEntry.SetText("0") // 0 means unlimited
+	*/
 
 	loggingLevelSelect := widget.NewSelect([]string{"Debug", "Info", "Warning", "Error", "Fatal", "Panic"}, func(value string) {
 		// Adjust log level based on selection
@@ -146,9 +148,12 @@ func main() {
 	settingsForm := widget.NewForm(
 		widget.NewFormItem("Download Directory", container.NewHBox(downloadDirEntry, downloadDirButton)),
 		widget.NewFormItem("Max Connections", maxConnectionsEntry),
-		widget.NewFormItem("Listening Port", portEntry),
-		widget.NewFormItem("Upload Limit (kB/s)", uploadLimitEntry),
-		widget.NewFormItem("Download Limit (kB/s)", downloadLimitEntry),
+		/*
+			widget.NewFormItem("Listening Port", portEntry),
+			widget.NewFormItem("Upload Limit (kB/s)", uploadLimitEntry),
+			widget.NewFormItem("Download Limit (kB/s)", downloadLimitEntry),
+
+		*/
 		widget.NewFormItem("Logging Level", loggingLevelSelect),
 	)
 	settingsForm.Resize(fyne.NewSize(600, settingsForm.Size().Height))
@@ -227,24 +232,26 @@ func main() {
 			showError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
 			return
 		}
+		/*
+			port, err := strconv.Atoi(portEntry.Text)
+			if err != nil || port <= 0 || port > 65535 {
+				showError("Invalid Settings", fmt.Errorf("Port must be a valid TCP port number"), myWindow)
+				return
+			}
 
-		port, err := strconv.Atoi(portEntry.Text)
-		if err != nil || port <= 0 || port > 65535 {
-			showError("Invalid Settings", fmt.Errorf("Port must be a valid TCP port number"), myWindow)
-			return
-		}
+				uploadLimit, err := strconv.Atoi(uploadLimitEntry.Text)
+				if err != nil || uploadLimit < 0 {
+					showError("Invalid Settings", fmt.Errorf("Upload Limit must be 0 or a positive integer"), myWindow)
+					return
+				}
 
-		uploadLimit, err := strconv.Atoi(uploadLimitEntry.Text)
-		if err != nil || uploadLimit < 0 {
-			showError("Invalid Settings", fmt.Errorf("Upload Limit must be 0 or a positive integer"), myWindow)
-			return
-		}
+				downloadLimit, err := strconv.Atoi(downloadLimitEntry.Text)
+				if err != nil || downloadLimit < 0 {
+					showError("Invalid Settings", fmt.Errorf("Download Limit must be 0 or a positive integer"), myWindow)
+					return
+				}
 
-		downloadLimit, err := strconv.Atoi(downloadLimitEntry.Text)
-		if err != nil || downloadLimit < 0 {
-			showError("Invalid Settings", fmt.Errorf("Download Limit must be 0 or a positive integer"), myWindow)
-			return
-		}
+		*/
 
 		// Open file dialog to select torrent file
 		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
@@ -349,7 +356,9 @@ func main() {
 				defer progressTicker.Stop()
 
 				// Get peers from tracker
-				peers, err := tracker.GetPeersFromSimpTracker(&mi)
+				//peers, err := tracker.GetPeersFromSimpTracker(&mi)
+				//peers, err := tracker.GetPeersFromPostmanTracker(&mi)
+				peers, err := tracker.GetPeersFromDg2racker(&mi)
 				if err != nil {
 					showError("Failed to get peers from tracker", err, myWindow)
 					return
