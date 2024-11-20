@@ -248,10 +248,11 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 		} else {
 			log.Debug("Found pieces to request from this peer")
 		}
+
 		piece := dm.Pieces[pieceIndex]
-		piece.Mu.Lock()
-		defer piece.Mu.Unlock()
+
 		for blockNum, received := range piece.Blocks {
+			//piece.Mu.Lock()
 			if !received && !ps.IsBlockRequested(pieceIndex, uint32(blockNum)*BlockSize) {
 				offset := uint32(blockNum) * BlockSize
 				length := BlockSize
@@ -277,6 +278,7 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 
 				break // Request one block at a time
 			}
+			//piece.Mu.Unlock()
 		}
 
 		// Validate the piece index
