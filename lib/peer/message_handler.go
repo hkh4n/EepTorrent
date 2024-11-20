@@ -221,93 +221,94 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 		return nil
 	}
 
-	dm.Mu.Lock()
-	defer dm.Mu.Unlock()
-
-	// Reset request state if no pending requests
-	if atomic.LoadInt32(&ps.PendingRequests) == 0 {
-		ps.RequestPending = false
-	}
-
-	pipelineLimit := 5
+	const pipelineLimit = 5
 	var firstErr error
 
 	for atomic.LoadInt32(&ps.PendingRequests) < int32(pipelineLimit) && !dm.IsFinished() {
-		var pieceIndex uint32 = dm.CurrentPiece
+		var pieceIndex uint32
+		var blockNum int
 		var found bool
-		// Find a piece that we need and the peer has
-		for i := 0; i < len(dm.Pieces); i++ {
-			if !dm.Bitfield.IsSet(uint32(i)) && pc.BitField.IsSet(uint32(i)) {
-				pieceIndex = uint32(i)
-				found = true
+
+		// Lock dm only when accessing shared resources
+		dm.Mu.Lock()
+		totalPieces := len(dm.Pieces)
+		dm.Mu.Unlock()
+
+		// Iterate over all pieces
+		for i := 0; i < totalPieces; i++ {
+			dm.Mu.Lock()
+			// Check if we already have this piece
+			if dm.Bitfield.IsSet(uint32(i)) {
+				dm.Mu.Unlock()
+				continue
+			}
+			// Check if the peer has this piece
+			if !pc.BitField.IsSet(uint32(i)) {
+				dm.Mu.Unlock()
+				continue
+			}
+			piece := dm.Pieces[i]
+			dm.Mu.Unlock()
+
+			// Lock the piece when accessing its blocks
+			piece.Mu.Lock()
+			for j, received := range piece.Blocks {
+				offset := uint32(j) * BlockSize
+				// Check if the block is already received or requested
+				if !received && !ps.IsBlockRequested(uint32(i), offset) {
+					pieceIndex = uint32(i)
+					blockNum = j
+					found = true
+					// Mark the block as requested
+					ps.MarkBlockRequested(pieceIndex, offset)
+					atomic.AddInt32(&ps.PendingRequests, 1)
+					log.WithFields(logrus.Fields{
+						"piece_index":      pieceIndex,
+						"offset":           offset,
+						"pending_requests": atomic.LoadInt32(&ps.PendingRequests),
+					}).Info("Preparing to request block")
+					piece.Mu.Unlock()
+					break
+				}
+			}
+			if !found {
+				piece.Mu.Unlock()
+			} else {
 				break
 			}
 		}
 
 		if !found {
-			log.Debug("No pieces to request from this peer")
-			return nil
-		} else {
-			log.WithField("piece_index", pieceIndex).Debug("Found piece to request from this peer")
+			log.Debug("No blocks to request from this peer")
+			break
 		}
 
-		piece := dm.Pieces[pieceIndex]
-		var offset uint32
-		var length int
-		blockFound := false
+		offset := uint32(blockNum) * BlockSize
+		length := BlockSize
 
-		piece.Mu.Lock()
-		for blockNum, received := range piece.Blocks {
-			if !received && !ps.IsBlockRequested(pieceIndex, uint32(blockNum)*BlockSize) {
-				offset = uint32(blockNum) * BlockSize
-				length = BlockSize
-				// Adjust length for last block
-				pieceLength := dm.Writer.Info().PieceLength
-				if int64(offset)+int64(length) > pieceLength {
-					length = int(pieceLength - int64(offset))
-				}
-				blockFound = true
-				break
-			}
-		}
-		piece.Mu.Unlock() // Unlock after accessing shared data
+		// Adjust length for the last block in the piece
+		dm.Mu.Lock()
+		pieceLength := dm.Writer.Info().PieceLength
+		dm.Mu.Unlock()
 
-		if !blockFound {
-			log.WithField("piece_index", pieceIndex).Debug("No blocks to request in this piece")
-			dm.CurrentPiece++
-			dm.CurrentOffset = 0
-			continue
+		// Handle the last block size adjustment
+		if int64(offset)+int64(length) > pieceLength {
+			length = int(pieceLength - int64(offset))
 		}
 
-		// Send request outside the locked section
+		// Send the request
 		err := pc.SendRequest(pieceIndex, offset, uint32(length))
 		if err != nil {
 			log.WithError(err).Error("Failed to send request")
 			if firstErr == nil {
 				firstErr = err
 			}
+			// Decrement pending requests since the request failed
+			atomic.AddInt32(&ps.PendingRequests, -1)
 			continue
 		}
 
-		ps.MarkBlockRequested(pieceIndex, offset)
-		atomic.AddInt32(&ps.PendingRequests, 1)
-		log.WithFields(logrus.Fields{
-			"piece_index":      pieceIndex,
-			"offset":           offset,
-			"length":           length,
-			"pending_requests": atomic.LoadInt32(&ps.PendingRequests),
-		}).Info("Requested block")
-
-		// Update current piece and offset
-		dm.CurrentPiece = pieceIndex
-		dm.CurrentOffset = offset + uint32(length)
-		if dm.CurrentOffset >= uint32(dm.Writer.Info().PieceLength) {
-			dm.CurrentPiece++
-			dm.CurrentOffset = 0
-		}
-
-		// Break after requesting one block
-		break
+		// Proceed to request the next block
 	}
 
 	if firstErr != nil {
@@ -316,129 +317,3 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 
 	return firstErr
 }
-
-/*
-// requestNextBlock requests the next available block from the DownloadManager
-func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerState) error {
-	log := log.WithFields(logrus.Fields{
-		"peer":             pc.RemoteAddr().String(),
-		"pending_requests": atomic.LoadInt32(&ps.PendingRequests),
-		"request_pending":  ps.RequestPending,
-	})
-	pipelineLimit := 5
-	var firstErr error
-
-	// Add debug logging for initial state
-	log.WithFields(logrus.Fields{
-		"peer_has_pieces": pc.BitField != nil,
-		"current_piece":   dm.CurrentPiece,
-		"current_offset":  dm.CurrentOffset,
-		"total_pieces":    dm.Writer.Info().CountPieces(),
-	}).Debug("Starting block request")
-
-	dm.Mu.Lock()
-	defer dm.Mu.Unlock()
-
-	for atomic.LoadInt32(&ps.PendingRequests) < int32(pipelineLimit) && !dm.IsFinished() {
-		// Find next piece we need that this peer has
-		var pieceIndex uint32
-		found := false
-		for i := dm.CurrentPiece; i < uint32(dm.Writer.Info().CountPieces()); i++ {
-			if !dm.Bitfield.IsSet(i) && pc.BitField.IsSet(i) {
-				pieceIndex = i
-				found = true
-				log.WithFields(logrus.Fields{
-					"piece_index": pieceIndex,
-					"we_have_it":  dm.Bitfield.IsSet(i),
-					"peer_has_it": pc.BitField.IsSet(i),
-				}).Debug("Found needed piece")
-				break
-			}
-		}
-
-		if !found {
-			log.Debug("No more pieces needed from this peer")
-			return nil
-		}
-
-		// Calculate block size for this piece
-		remainingInPiece := dm.Writer.Info().PieceLength
-		if pieceIndex == uint32(dm.Writer.Info().CountPieces()-1) {
-			remaining := dm.Writer.Info().TotalLength() - int64(pieceIndex)*dm.Writer.Info().PieceLength
-			if remaining < dm.Writer.Info().PieceLength {
-				remainingInPiece = remaining
-			}
-		}
-
-		// Calculate offset and length for next block
-		offset := dm.CurrentOffset
-		length := uint32(BlockSize)
-		if int64(offset+length) > remainingInPiece {
-			length = uint32(remainingInPiece - int64(offset))
-		}
-
-		// Check if block already requested
-		ps.Lock()
-		alreadyRequested := ps.RequestedBlocks[pieceIndex][offset]
-		requested := ps.RequestedBlocks[pieceIndex]
-		if !alreadyRequested {
-			if ps.RequestedBlocks[pieceIndex] == nil {
-				ps.RequestedBlocks[pieceIndex] = make(map[uint32]bool)
-			}
-			ps.RequestedBlocks[pieceIndex][offset] = true
-		}
-		ps.Unlock()
-
-		log.WithFields(logrus.Fields{
-			"piece_index":       pieceIndex,
-			"offset":            offset,
-			"length":            length,
-			"already_requested": alreadyRequested,
-			"requested_blocks":  len(requested),
-		}).Debug("Block request status")
-
-		if alreadyRequested {
-			dm.CurrentOffset += uint32(BlockSize)
-			if int64(dm.CurrentOffset) >= remainingInPiece {
-				dm.CurrentPiece++
-				dm.CurrentOffset = 0
-			}
-			continue
-		}
-
-		// Request the block
-		err := pc.SendRequest(pieceIndex, offset, length)
-		if err != nil {
-			log.WithError(err).Error("Failed to send request")
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-
-		atomic.AddInt32(&ps.PendingRequests, 1)
-		ps.RequestPending = true
-
-		log.WithFields(logrus.Fields{
-			"piece_index":      pieceIndex,
-			"offset":           offset,
-			"length":           length,
-			"pending_requests": atomic.LoadInt32(&ps.PendingRequests),
-		}).Info("Successfully requested block")
-
-		// Increment offset/piece for next request
-		dm.CurrentOffset += uint32(BlockSize)
-		if int64(dm.CurrentOffset) >= remainingInPiece {
-			dm.CurrentPiece++
-			dm.CurrentOffset = 0
-		}
-	}
-	if firstErr != nil {
-		log.WithError(firstErr).Error("Errors occurred during block requests")
-	}
-
-	return firstErr
-}
-
-
-*/

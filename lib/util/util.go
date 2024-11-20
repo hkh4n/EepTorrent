@@ -51,7 +51,7 @@ func GeneratePeerIdMeta() metainfo.Hash {
 	var peerId metainfo.Hash
 
 	// Define the prefix (8 bytes)
-	prefix := "-ET1337-"
+	prefix := "-ET0000-"
 	copy(peerId[:8], prefix)
 
 	// Generate 12 random bytes for uniqueness
@@ -65,7 +65,7 @@ func GeneratePeerIdMeta() metainfo.Hash {
 
 func GeneratePeerId() string {
 	// Client identifier (8 bytes)
-	clientId := "-ET1337-"
+	clientId := "-ET0000-"
 	// Generate 12 random bytes for uniqueness
 	randomBytes := make([]byte, 12)
 	_, err := rand.Read(randomBytes)
