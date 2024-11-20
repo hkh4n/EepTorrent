@@ -45,7 +45,7 @@ var log = logrus.StandardLogger()
 		}
 	}
 */
-func GetPeersFromDg2racker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	log.Info("Getting peers from postman tracker")
 	sam := i2p.GlobalSAM
 	keys, err := i2p.GlobalSAM.NewKeys()
@@ -59,7 +59,12 @@ func GetPeersFromDg2racker(mi *metainfo.MetaInfo) ([][]byte, error) {
 		log.WithError(err).Error("Failed to lookup postman tracker address")
 		return nil, err
 	}
-
+	info, err := mi.Info()
+	if err != nil {
+		log.WithError(err).Error("Failed to parse metainfo")
+		return nil, err
+	}
+	totalLength := info.TotalLength()
 	// Create URL string
 	ihEnc := mi.InfoHash().Bytes()
 	pidEnc := util.GeneratePeerId()
@@ -75,7 +80,7 @@ func GetPeersFromDg2racker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	query.Set("port", strconv.Itoa(6881))
 	query.Set("uploaded", "0")
 	query.Set("downloaded", "0")
-	query.Set("left", "65536")
+	query.Set("left", strconv.FormatInt(totalLength, 10))
 	query.Set("compact", "0")
 	destination := util.UrlEncodeBytes([]byte(keys.Addr().Base64()))
 	destination += ".i2p"
@@ -171,7 +176,12 @@ func GetPeersFromPostmanTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 		log.WithError(err).Error("Failed to lookup postman tracker address")
 		return nil, err
 	}
-
+	info, err := mi.Info()
+	if err != nil {
+		log.WithError(err).Error("Failed to parse metainfo")
+		return nil, err
+	}
+	totalLength := info.TotalLength()
 	// Create URL string
 	ihEnc := mi.InfoHash().Bytes()
 	pidEnc := util.GeneratePeerId()
@@ -187,8 +197,8 @@ func GetPeersFromPostmanTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	query.Set("port", strconv.Itoa(6881))
 	query.Set("uploaded", "0")
 	query.Set("downloaded", "0")
-	query.Set("left", "65536")
-	query.Set("compact", "0")
+	query.Set("left", strconv.FormatInt(totalLength, 10))
+	query.Set("compact", "1")
 	destination := util.UrlEncodeBytes([]byte(keys.Addr().Base64()))
 	destination += ".i2p"
 	query.Set("ip", destination)

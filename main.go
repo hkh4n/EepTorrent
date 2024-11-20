@@ -358,7 +358,7 @@ func main() {
 				// Get peers from tracker
 				//peers, err := tracker.GetPeersFromSimpTracker(&mi)
 				//peers, err := tracker.GetPeersFromPostmanTracker(&mi)
-				peers, err := tracker.GetPeersFromDg2racker(&mi)
+				peers, err := tracker.GetPeersFromPostmanTracker(&mi)
 				if err != nil {
 					showError("Failed to get peers from tracker", err, myWindow)
 					return
