@@ -286,14 +286,25 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 		offset := uint32(blockNum) * BlockSize
 		length := BlockSize
 
+		log.WithFields(logrus.Fields{
+			"piece_index": pieceIndex,
+			"offset":      offset,
+			"length":      length,
+		}).Info("Requesting block")
+
 		// Adjust length for the last block in the piece
 		dm.Mu.Lock()
-		pieceLength := dm.Writer.Info().PieceLength
+		var pieceSize int64
+		if int(pieceIndex) == len(dm.Pieces)-1 {
+			// Last piece
+			pieceSize = dm.Writer.Info().TotalLength() - int64(pieceIndex)*dm.Writer.Info().PieceLength
+		} else {
+			pieceSize = dm.Writer.Info().PieceLength
+		}
 		dm.Mu.Unlock()
 
-		// Handle the last block size adjustment
-		if int64(offset)+int64(length) > pieceLength {
-			length = int(pieceLength - int64(offset))
+		if int64(offset)+int64(length) > pieceSize {
+			length = int(pieceSize - int64(offset))
 		}
 
 		// Send the request

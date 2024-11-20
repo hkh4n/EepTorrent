@@ -76,22 +76,19 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 	for i := 0; i < totalPieces; i++ {
 		// Calculate number of blocks per piece
 		remainingData := totalLength - int64(i)*pieceLength
-		var blocks uint32
+		var pieceSize int64
 		if remainingData < pieceLength {
-			blocks = uint32((remainingData + downloader.BlockSize - 1) / downloader.BlockSize)
+			pieceSize = remainingData
 		} else {
-			blocks = uint32(pieceLength / downloader.BlockSize)
+			pieceSize = pieceLength
 		}
+		blocks := uint32((pieceSize + int64(downloader.BlockSize) - 1) / int64(downloader.BlockSize))
 		pieces[i] = &PieceStatus{
 			Index:       uint32(i),
 			TotalBlocks: blocks,
 			Blocks:      make([]bool, blocks),
 			Completed:   false,
 		}
-		log.WithFields(logrus.Fields{
-			"piece_index":  i,
-			"total_blocks": blocks,
-		}).Debug("Initialized PieceStatus")
 	}
 	return &DownloadManager{
 		Writer:          writer,
@@ -406,38 +403,33 @@ func (dm *DownloadManager) GetAllRemainingBlocks() []BlockInfo {
 
 func (dm *DownloadManager) RequestAllRemainingBlocks(peers []*pp.PeerConn) {
 	log.WithField("num_peers", len(peers)).Debug("Requesting all remaining blocks from peers")
+	remainingBlocks := dm.GetAllRemainingBlocks()
 	for _, peer := range peers {
 		if peer.PeerChoked {
 			log.WithField("peer", peer.RemoteAddr().String()).Debug("Peer is choked, skipping")
 			continue
 		}
-		for _, block := range dm.GetAllRemainingBlocks() {
+		for _, block := range remainingBlocks {
 			// Check if the peer has the piece
 			if peer.BitField.IsSet(block.PieceIndex) {
-				// Check if the block has already been requested
-				if !dm.IsBlockRequested(block.PieceIndex, block.Offset) {
-					err := peer.SendRequest(block.PieceIndex, block.Offset, block.Length)
-					if err != nil {
-						log.WithFields(logrus.Fields{
-							"peer":        peer.RemoteAddr().String(),
-							"piece_index": block.PieceIndex,
-							"offset":      block.Offset,
-						}).WithError(err).Error("Failed to send endgame request")
-						continue
-					}
-					// Mark the block as requested
-					dm.MarkBlockRequested(block.PieceIndex, block.Offset)
+				err := peer.SendRequest(block.PieceIndex, block.Offset, block.Length)
+				if err != nil {
 					log.WithFields(logrus.Fields{
 						"peer":        peer.RemoteAddr().String(),
 						"piece_index": block.PieceIndex,
 						"offset":      block.Offset,
-					}).Debug("Sent endgame block request")
+					}).WithError(err).Error("Failed to send endgame request")
+					continue
 				}
+				log.WithFields(logrus.Fields{
+					"peer":        peer.RemoteAddr().String(),
+					"piece_index": block.PieceIndex,
+					"offset":      block.Offset,
+				}).Debug("Sent endgame block request")
 			}
 		}
 	}
 }
-
 func (dm *DownloadManager) IsBlockRequested(pieceIndex, offset uint32) bool {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
@@ -520,8 +512,8 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 		return false
 	}
 
-	expectedHash := dm.Writer.Info().Pieces[index] // Assuming Pieces[index] is a byte slice (hash)
-	actualHash := sha1.Sum(pieceData)              // Import "crypto/sha1"
+	expectedHash := dm.Writer.Info().Pieces[index]
+	actualHash := sha1.Sum(pieceData)
 
 	if !bytes.Equal(expectedHash[:], actualHash[:]) {
 		log.WithFields(logrus.Fields{
@@ -531,6 +523,10 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 		}).Error("Piece hash mismatch")
 		return false
 	}
+
+	dm.Mu.Lock()
+	dm.Bitfield.Set(index)
+	dm.Mu.Unlock()
 
 	log.WithFields(logrus.Fields{
 		"piece_index": index,

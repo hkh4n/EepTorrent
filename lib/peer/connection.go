@@ -34,6 +34,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -164,21 +165,28 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 }
 
 func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
+	// Set the connection deadline
 	deadline := time.Now().Add(15 * time.Second)
 	err := pc.Conn.SetDeadline(deadline)
 	if err != nil {
 		return fmt.Errorf("failed to set deadline: %v", err)
 	}
-	//log.WithField("peer", pc.RemoteAddr().String()).Debug()
+
 	log := log.WithField("peer", pc.RemoteAddr().String())
-	defer pc.Close()
 
-	ps := NewPeerState() // Initialize per-peer state
+	// Initialize per-peer state
+	ps := NewPeerState()
 
+	// Add the peer to the DownloadManager
 	dm.AddPeer(pc)
-	defer dm.RemovePeer(pc)
+	defer func() {
+		// On disconnection, re-request pending blocks
+		reRequestPendingBlocks(pc, dm, ps)
+		dm.RemovePeer(pc)
+		pc.Close()
+	}()
 
-	// Send BitField if needed
+	// Send BitField
 	err = pc.SendBitfield(dm.Bitfield)
 	if err != nil {
 		log.WithError(err).Error("Failed to send Bitfield")
@@ -220,7 +228,32 @@ func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 		}
 	}
 }
+func reRequestPendingBlocks(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerState) {
+	ps.Lock()
+	defer ps.Unlock()
 
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+
+	for pieceIndex, blocks := range ps.RequestedBlocks {
+		if int(pieceIndex) >= len(dm.Pieces) {
+			continue
+		}
+		piece := dm.Pieces[pieceIndex]
+		if piece == nil {
+			continue
+		}
+		piece.Mu.Lock()
+		for offset := range blocks {
+			// Mark block as not requested
+			// So it can be requested from other peers
+			delete(ps.RequestedBlocks[pieceIndex], offset)
+			// Also, decrement the pending requests
+			atomic.AddInt32(&ps.PendingRequests, -1)
+		}
+		piece.Mu.Unlock()
+	}
+}
 func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	// Set deadline
 	deadline := time.Now().Add(15 * time.Second)
