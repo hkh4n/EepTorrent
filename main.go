@@ -51,7 +51,6 @@ var (
 )
 
 func init() {
-	// Configure logrus
 	log.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 		DisableColors: false,
@@ -261,16 +260,12 @@ func main() {
 	)
 	myWindow.SetMainMenu(menu)
 
-	// Show disclaimer
 	showDisclaimer(myApp, myWindow)
 
-	// Show the window and start the GUI event loop
 	myWindow.ShowAndRun()
 }
 
-// Helper function to start torrent download
 func startTorrentDownload(torrent *Torrent, myWindow fyne.Window, downloadDir string, maxConnectionsStr string, torrentList *widget.List) {
-	// Check if already downloading
 	if torrent.Status == "Downloading" {
 		return
 	}
@@ -446,12 +441,10 @@ func startTorrentDownload(torrent *Torrent, myWindow fyne.Window, downloadDir st
 	torrentList.Refresh()
 }
 
-// Helper function to display errors
 func showError(title string, err error, parent fyne.Window) {
 	dialog.ShowError(fmt.Errorf("%s: %v", title, err), parent)
 }
 
-// Helper function to show the About dialog
 func showAboutDialog(app fyne.App, parent fyne.Window) {
 	gitCommitDisplay := util.GitCommit
 	dialog.ShowCustom("About EepTorrent", "Close",
@@ -542,7 +535,6 @@ func showDisclaimer(app fyne.App, parent fyne.Window) {
 		parent,
 	)
 
-	// Make the dialog modal (prevents interaction with other windows until closed)
 	dialog.SetDismissText("Decline")
 	dialog.Show()
 }
