@@ -35,6 +35,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 	"image/color"
+	"io"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -58,6 +59,8 @@ var (
 	log          = logrus.StandardLogger()
 	maxRetries   = 20
 	initialDelay = 2 * time.Second
+	logFile      *os.File
+	logFileMux   sync.Mutex
 )
 
 func init() {
@@ -66,6 +69,7 @@ func init() {
 		FullTimestamp: true,
 		DisableColors: false,
 	})
+	log.SetOutput(os.Stderr)
 	log.SetLevel(logrus.DebugLevel)
 }
 
@@ -195,6 +199,53 @@ func main() {
 				// Trigger the start button action
 				startButton.OnTapped()
 			}),
+			fyne.NewMenuItem("Save Logs to File...", func() {
+				saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
+					if err != nil {
+						showError("Save Logs Error", err, myWindow)
+						return
+					}
+					if writer == nil {
+						// User canceled the dialog
+						return
+					}
+					logFilePath := writer.URI().Path()
+					writer.Close() // Close immediately after getting the path
+
+					if logFilePath == "" {
+						showError("Invalid File Path", fmt.Errorf("No file path selected"), myWindow)
+						return
+					}
+
+					// Open the selected log file
+					file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err != nil {
+						showError("Failed to Open Log File", err, myWindow)
+						return
+					}
+
+					// Safely update the log output
+					logFileMux.Lock()
+					defer logFileMux.Unlock()
+
+					// If a log file was previously open, close it
+					if logFile != nil {
+						logFile.Close()
+					}
+
+					logFile = file
+					// Set Logrus to write to both stderr and the file
+					log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+					log.Info("Logging to file enabled")
+					dialog.ShowInformation("Logging Enabled", fmt.Sprintf("Logs are being saved to:\n%s", logFilePath), myWindow)
+				}, myWindow)
+
+				// Set the default file name
+				saveDialog.SetFileName("eeptorrent.log")
+
+				// Show the save dialog
+				saveDialog.Show()
+			}),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("Quit", func() {
 				myApp.Quit()
@@ -213,6 +264,15 @@ func main() {
 		),
 	)
 	myWindow.SetMainMenu(menu)
+
+	// Ensure log file is closed on application exit
+	myWindow.SetOnClosed(func() {
+		logFileMux.Lock()
+		if logFile != nil {
+			logFile.Close()
+		}
+		logFileMux.Unlock()
+	})
 
 	// Start button handler
 	startButton.OnTapped = func() {
@@ -447,6 +507,14 @@ func main() {
 			}()
 		}, myWindow)
 	}
+	// Ensure log file is closed on application exit
+	defer func() {
+		logFileMux.Lock()
+		if logFile != nil {
+			logFile.Close()
+		}
+		logFileMux.Unlock()
+	}()
 
 	// Stop button handler
 	stopButton.OnTapped = func() {
