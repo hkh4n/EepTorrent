@@ -388,6 +388,13 @@ func main() {
 					allPeers = append(allPeers, peersDg2...)
 				}
 
+				peersSkank, err := tracker.GetPeersFromSkankTracker(&mi)
+				if err != nil {
+					log.WithError(err).Warn("Failed to get peers from Skank Tracker")
+				} else {
+					allPeers = append(allPeers, peersSkank...)
+				}
+
 				if len(allPeers) == 0 {
 					showError("Failed to get peers from any tracker", fmt.Errorf("No peers found"), myWindow)
 					return
