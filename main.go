@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 import (
+	"bytes"
 	"context"
 	"eeptorrent/lib/download"
 	"eeptorrent/lib/i2p"
@@ -61,6 +62,7 @@ var (
 	initialDelay = 2 * time.Second
 	logFile      *os.File
 	logFileMux   sync.Mutex
+	logBuffer    bytes.Buffer
 )
 
 func init() {
@@ -69,7 +71,7 @@ func init() {
 		FullTimestamp: true,
 		DisableColors: false,
 	})
-	log.SetOutput(os.Stderr)
+	log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer))
 	log.SetLevel(logrus.DebugLevel)
 }
 
@@ -228,14 +230,22 @@ func main() {
 					logFileMux.Lock()
 					defer logFileMux.Unlock()
 
+					// Write the contents of logBuffer to the file
+					_, err = file.Write(logBuffer.Bytes())
+					if err != nil {
+						showError("Failed to Write Logs to File", err, myWindow)
+						file.Close()
+						return
+					}
+
 					// If a log file was previously open, close it
 					if logFile != nil {
 						logFile.Close()
 					}
 
 					logFile = file
-					// Set Logrus to write to both stderr and the file
-					log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+					// Set Logrus to write to os.Stderr, logBuffer, and the file
+					log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer, logFile))
 					log.Info("Logging to file enabled")
 					dialog.ShowInformation("Logging Enabled", fmt.Sprintf("Logs are being saved to:\n%s", logFilePath), myWindow)
 				}, myWindow)

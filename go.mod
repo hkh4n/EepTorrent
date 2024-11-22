@@ -5,33 +5,25 @@ go 1.23.2
 require (
 	fyne.io/fyne/v2 v2.5.2
 	github.com/go-i2p/go-i2p-bt v0.0.0-20241109165341-02c954c22874
+	github.com/go-i2p/i2pkeys v0.0.0-20241108200332-e4f5ccdff8c4
 	github.com/go-i2p/sam3 v0.33.9
 	github.com/sirupsen/logrus v1.9.3
-	gonum.org/v1/plot v0.15.0
 )
 
 require (
 	fyne.io/systray v1.11.0 // indirect
-	git.sr.ht/~sbinet/gg v0.6.0 // indirect
 	github.com/BurntSushi/toml v1.4.0 // indirect
-	github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b // indirect
-	github.com/campoy/embedmd v1.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/fredbi/uri v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/fyne-io/gl-js v0.0.0-20220119005834-d2da28d9ccfe // indirect
 	github.com/fyne-io/glfw-js v0.0.0-20240101223322-6e1efdc71b7a // indirect
 	github.com/fyne-io/image v0.0.0-20220602074514-4956b0afb3d2 // indirect
-	github.com/go-fonts/liberation v0.3.3 // indirect
 	github.com/go-gl/gl v0.0.0-20211210172815-726fda9656d6 // indirect
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20240506104042-037f3cc74f2a // indirect
-	github.com/go-i2p/i2pkeys v0.0.0-20241108200332-e4f5ccdff8c4 // indirect
-	github.com/go-latex/latex v0.0.0-20240709081214-31cef3c7570e // indirect
-	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/go-text/render v0.2.0 // indirect
 	github.com/go-text/typesetting v0.2.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/google/pprof v0.0.0-20221118152302-e6195bd50e26 // indirect
 	github.com/gopherjs/gopherjs v1.17.2 // indirect
 	github.com/jeandeaual/go-locale v0.0.0-20240223122105-ce5225dcaa49 // indirect
