@@ -143,7 +143,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 
 	// Perform the BitTorrent handshake
 	peerId := util.GeneratePeerIdMeta()
-	err := performHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
+	err := PerformHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
 	if err != nil {
 		log.Errorf("Handshake with peer %s failed: %v", peerB32Addr, err)
 		return fmt.Errorf("failed to handshake with peer %s: %v", peerB32Addr, err)
@@ -156,7 +156,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	pc.Timeout = 30 * time.Second
 
 	// Start the message handling loop
-	err = handlePeerConnection(ctx, pc, dm)
+	err = HandlePeerConnection(ctx, pc, dm)
 	if err != nil {
 		log.Errorf("Peer connection error: %v", err)
 		return fmt.Errorf("peer connection error: %v", err)
@@ -164,7 +164,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	return nil
 }
 
-func handlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
+func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
 	// Set the connection deadline
 	deadline := time.Now().Add(15 * time.Second)
 	err := pc.Conn.SetDeadline(deadline)
@@ -254,7 +254,7 @@ func reRequestPendingBlocks(pc *pp.PeerConn, dm *download.DownloadManager, ps *P
 		piece.Mu.Unlock()
 	}
 }
-func performHandshake(conn net.Conn, infoHash []byte, peerId string) error {
+func PerformHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	// Set deadline
 	deadline := time.Now().Add(15 * time.Second)
 	err := conn.SetDeadline(deadline)

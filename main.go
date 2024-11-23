@@ -33,8 +33,10 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
+	"github.com/go-i2p/sam3"
 	"github.com/sirupsen/logrus"
-	"image/color"
+	"net"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -72,18 +74,14 @@ func init() {
 func main() {
 	// Initialize the Fyne application
 	myApp := app.New()
-	myApp.SetIcon(logo.ResourceLogo32Png)
+	myApp.SetIcon(logo.ResourceLogo32Png) // Ensure you have the correct icon resource
 
 	myWindow := myApp.NewWindow("EepTorrent")
 
-	//Set background
-	// Create the background image
+	// Set background (optional)
 	background := canvas.NewImageFromResource(logo.ResourceLogoPng)
 	background.FillMode = canvas.ImageFillContain // Adjust as needed: FillOriginal, FillContain, FillFill, FillStretch
 
-	// Optionally, set a semi-transparent overlay if needed
-	overlay := canvas.NewRectangle(color.NRGBA{0, 0, 0, 100}) // Semi-transparent black
-	overlay.SetMinSize(myWindow.Canvas().Size())
 	// Show disclaimer
 	showDisclaimer(myApp, myWindow)
 
@@ -114,17 +112,6 @@ func main() {
 
 	maxConnectionsEntry := widget.NewEntry()
 	maxConnectionsEntry.SetText("50") // Default value
-	/*
-		portEntry := widget.NewEntry()
-		portEntry.SetText("6881") // Default port
-
-		uploadLimitEntry := widget.NewEntry()
-		uploadLimitEntry.SetText("0") // 0 means unlimited
-
-		downloadLimitEntry := widget.NewEntry()
-		downloadLimitEntry.SetText("0") // 0 means unlimited
-
-	*/
 
 	loggingLevelSelect := widget.NewSelect([]string{"Debug", "Info", "Warning", "Error", "Fatal", "Panic"}, func(value string) {
 		// Adjust log level based on selection
@@ -144,16 +131,11 @@ func main() {
 		}
 	})
 	loggingLevelSelect.SetSelected("Debug")
+
 	// Assemble the settings form
 	settingsForm := widget.NewForm(
 		widget.NewFormItem("Download Directory", container.NewHBox(downloadDirEntry, downloadDirButton)),
 		widget.NewFormItem("Max Connections", maxConnectionsEntry),
-		/*
-			widget.NewFormItem("Listening Port", portEntry),
-			widget.NewFormItem("Upload Limit (kB/s)", uploadLimitEntry),
-			widget.NewFormItem("Download Limit (kB/s)", downloadLimitEntry),
-
-		*/
 		widget.NewFormItem("Logging Level", loggingLevelSelect),
 	)
 	settingsForm.Resize(fyne.NewSize(600, settingsForm.Size().Height))
@@ -164,26 +146,22 @@ func main() {
 		settingsForm,
 	)
 
-	downloadSpeedLabel := widget.NewLabel("Speed: 0 KB/s")
+	downloadSpeedLabel := widget.NewLabel("Download Speed: 0 KB/s")
+	uploadSpeedLabel := widget.NewLabel("Upload Speed: 0 KB/s")
+	totalUploadedLabel := widget.NewLabel("Total Uploaded: 0 MB")
 
 	// Create the main content area
 	mainContent := container.NewVBox(
 		progressBar,
 		downloadSpeedLabel,
+		uploadSpeedLabel,
+		totalUploadedLabel,
 		statusLabel,
 		container.NewHBox(startButton, stopButton),
 	)
 
 	// Layout the UI components with side menu
 	content := container.NewBorder(nil, nil, sideMenu, nil, mainContent)
-	/*
-		content := container.NewStack(
-			background,
-			sideMenu,
-			mainContent, // Your main UI components
-		)
-
-	*/
 
 	myWindow.SetContent(content)
 	myWindow.Resize(fyne.NewSize(800, 600))
@@ -232,26 +210,6 @@ func main() {
 			showError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
 			return
 		}
-		/*
-			port, err := strconv.Atoi(portEntry.Text)
-			if err != nil || port <= 0 || port > 65535 {
-				showError("Invalid Settings", fmt.Errorf("Port must be a valid TCP port number"), myWindow)
-				return
-			}
-
-				uploadLimit, err := strconv.Atoi(uploadLimitEntry.Text)
-				if err != nil || uploadLimit < 0 {
-					showError("Invalid Settings", fmt.Errorf("Upload Limit must be 0 or a positive integer"), myWindow)
-					return
-				}
-
-				downloadLimit, err := strconv.Atoi(downloadLimitEntry.Text)
-				if err != nil || downloadLimit < 0 {
-					showError("Invalid Settings", fmt.Errorf("Download Limit must be 0 or a positive integer"), myWindow)
-					return
-				}
-
-		*/
 
 		// Open file dialog to select torrent file
 		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
@@ -278,6 +236,7 @@ func main() {
 
 				// Initialize download stats
 				stats := download.NewDownloadStats()
+				_ = stats
 
 				// Initialize SAM
 				err := i2p.InitSAM()
@@ -326,27 +285,42 @@ func main() {
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
 
+				// Start the listener for incoming connections (seeding)
+				go func() {
+					err := startPeerListener(dm, &mi)
+					if err != nil {
+						log.WithError(err).Error("Failed to start peer listener")
+					}
+				}()
+
+				// Progress updater
 				go func() {
 					var prevDownloaded int64 = 0
+					var prevUploaded int64 = 0
 					for {
 						select {
 						case <-progressTicker.C:
 							dm.LogProgress()
 							progress := dm.Progress() / 100
 
-							// Safely load the total downloaded bytes
 							currentDownloaded := atomic.LoadInt64(&dm.Downloaded)
+							currentUploaded := atomic.LoadInt64(&dm.Uploaded)
 							bytesDownloaded := currentDownloaded - prevDownloaded
+							bytesUploaded := currentUploaded - prevUploaded
 							prevDownloaded = currentDownloaded
+							prevUploaded = currentUploaded
 
-							downloadSpeedKBps := float64(bytesDownloaded) / 1024 // KB/s
+							downloadSpeedKBps := float64(bytesDownloaded) / 1024
+							uploadSpeedKBps := float64(bytesUploaded) / 1024
 
 							// Update GUI elements on the main thread
-							//fyne.CurrentApp().Driver().RunOnMain(func() {
+
 							progressBar.SetValue(progress)
 							statusLabel.SetText(fmt.Sprintf("Downloading: %.2f%%", dm.Progress()))
-							downloadSpeedLabel.SetText(fmt.Sprintf("Speed: %.2f KB/s", downloadSpeedKBps))
-							//})
+							downloadSpeedLabel.SetText(fmt.Sprintf("Download Speed: %.2f KB/s", downloadSpeedKBps))
+							uploadSpeedLabel.SetText(fmt.Sprintf("Upload Speed: %.2f KB/s", uploadSpeedKBps))
+							totalUploadedLabel.SetText(fmt.Sprintf("Total Uploaded: %.2f MB", float64(dm.Uploaded)/1024/1024))
+
 						case <-ctx.Done():
 							progressTicker.Stop()
 							return
@@ -355,17 +329,7 @@ func main() {
 				}()
 				defer progressTicker.Stop()
 
-				// Get peers from tracker
-				//peers, err := tracker.GetPeersFromSimpTracker(&mi)
-				//peers, err := tracker.GetPeersFromPostmanTracker(&mi)
-				/*
-					peers, err := tracker.GetPeersFromPostmanTracker(&mi)
-					if err != nil {
-						showError("Failed to get peers from tracker", err, myWindow)
-						return
-					}
-
-				*/
+				// Get peers from trackers
 				var allPeers [][]byte
 				peersPostman, err := tracker.GetPeersFromPostmanTracker(&mi)
 				if err != nil {
@@ -402,24 +366,6 @@ func main() {
 				uniquePeers := removeDuplicatePeers(allPeers)
 
 				// Limit the number of connections based on user settings
-				/*
-					maxPeers := maxConnections
-					if len(peers) < maxPeers {
-						maxPeers = len(peers)
-					}
-
-					for i := 0; i < maxPeers; i++ {
-						wg.Add(1)
-						go func(peerHash []byte, index int) {
-							defer wg.Done()
-							stats.ConnectionStarted()
-							defer stats.ConnectionEnded()
-							//peer.ConnectToPeer(ctx, peerHash, index, &mi, dm)
-							retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
-						}(peers[i], i)
-					}
-
-				*/
 				maxPeers := maxConnections
 				if len(uniquePeers) < maxPeers {
 					maxPeers = len(uniquePeers)
@@ -429,8 +375,8 @@ func main() {
 					wg.Add(1)
 					go func(peerHash []byte, index int) {
 						defer wg.Done()
-						stats.ConnectionStarted()
-						defer stats.ConnectionEnded()
+						//stats.ConnectionStarted() // Assuming you have stats tracking
+						//defer stats.ConnectionEnded()
 						retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
 					}(uniquePeers[i], i)
 				}
@@ -441,8 +387,10 @@ func main() {
 
 				if dm.IsFinished() {
 					dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", info.Name), myWindow)
+					statusLabel.SetText("Seeding...")
 				} else {
 					dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
+					statusLabel.SetText("Download Incomplete")
 				}
 			}()
 		}, myWindow)
@@ -538,7 +486,7 @@ func showDisclaimer(app fyne.App, parent fyne.Window) {
 	// Create the content for the disclaimer
 	disclaimerContent := container.NewVBox(
 		widget.NewLabelWithStyle("Disclaimer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things.\nBut at the same time will be updated frequently, check back for updates!"),
+		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things. Please note that metrics may be inaccurate as this program is in flux.\nBut at the same time will be updated frequently, check back for updates!"),
 		widget.NewLabel("EepTorrent Copyright (C) 2024 Haris Khan\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it under certain conditions. See COPYING for details."),
 	)
 
@@ -561,4 +509,65 @@ func showDisclaimer(app fyne.App, parent fyne.Window) {
 	// Make the dialog modal (prevents interaction with other windows until closed)
 	dialog.SetDismissText("Decline")
 	dialog.Show()
+}
+
+// In startPeerListener function
+func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) error {
+	// Generate keys for the listener session
+	keys, err := i2p.GlobalSAM.NewKeys()
+	if err != nil {
+		return fmt.Errorf("Failed to generate keys for listener session: %v", err)
+	}
+
+	// Create the listener session
+	listenerSession, err := i2p.GlobalSAM.NewStreamSession("listenerSession", keys, sam3.Options_Default)
+	if err != nil {
+		return fmt.Errorf("Failed to create listener session: %v", err)
+	}
+
+	// Start listening for incoming connections
+	listener, err := listenerSession.Listen()
+	if err != nil {
+		return fmt.Errorf("Failed to start listening: %v", err)
+	}
+
+	log.Info("Started listener for incoming connections")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.WithError(err).Error("Error accepting connection")
+			continue
+		}
+
+		go handleIncomingConnection(conn, dm, mi)
+	}
+}
+
+func handleIncomingConnection(conn net.Conn, dm *download.DownloadManager, mi *metainfo.MetaInfo) {
+	defer conn.Close()
+
+	// Generate peer ID
+	peerIDMeta := util.GeneratePeerIdMeta()
+
+	// Perform handshake
+	err := peer.PerformHandshake(conn, mi.InfoHash().Bytes(), string(peerIDMeta[:]))
+	if err != nil {
+		log.WithError(err).Error("Handshake failed with incoming peer")
+		return
+	}
+
+	// Wrap the connection
+	pc := pp.NewPeerConn(conn, peerIDMeta, mi.InfoHash())
+	pc.Timeout = 30 * time.Second
+
+	// Add the peer to the DownloadManager
+	dm.AddPeer(pc)
+	defer dm.RemovePeer(pc)
+
+	// Start handling messages
+	err = peer.HandlePeerConnection(context.Background(), pc, dm)
+	if err != nil {
+		log.WithError(err).Error("Error handling incoming peer connection")
+	}
 }

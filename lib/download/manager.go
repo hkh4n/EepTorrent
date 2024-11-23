@@ -127,18 +127,13 @@ func (dm *DownloadManager) IsFinished() bool {
 	return completedPieces == totalPieces
 }
 
+// OnBlock handles the reception of a block from a peer.
 func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
+
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
-	piece := dm.Pieces[index]
-	piece.Mu.Lock()
-	defer piece.Mu.Unlock()
-	log.WithFields(logrus.Fields{
-		"index":  index,
-		"offset": offset,
-		"length": len(b),
-	}).Debug("OnBlock called")
-	// Validate piece index
+
+	// Validate piece index.
 	if int(index) >= len(dm.Pieces) {
 		log.WithFields(logrus.Fields{
 			"piece_index":  index,
@@ -147,7 +142,19 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		return fmt.Errorf("invalid piece index: %d", index)
 	}
 
-	// Calculate block number based on offset
+	piece := dm.Pieces[index]
+
+	// Acquire piece-specific lock.
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+
+	log.WithFields(logrus.Fields{
+		"index":  index,
+		"offset": offset,
+		"length": len(b),
+	}).Debug("OnBlock called")
+
+	// Calculate block number based on offset.
 	blockNum := offset / downloader.BlockSize
 	if blockNum >= piece.TotalBlocks {
 		log.WithFields(logrus.Fields{
@@ -157,23 +164,23 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		return fmt.Errorf("invalid block offset: %d", offset)
 	}
 
-	// Check if block is already received
+	// Check if block is already received.
 	if piece.Blocks[blockNum] {
 		log.WithFields(logrus.Fields{
 			"piece_index": index,
 			"block_num":   blockNum,
 		}).Warn("Received duplicate block")
-		return nil // Ignore duplicate
+		return nil // Ignore duplicate.
 	}
 
-	// Write the block
+	// Write the block to disk.
 	n, err := dm.Writer.WriteBlock(index, offset, b)
 	if err != nil {
 		log.WithError(err).Error("Failed to write block")
 		return err
 	}
 
-	// Update download progress
+	// Update download progress.
 	atomic.AddInt64(&dm.Downloaded, int64(n))
 	atomic.AddInt64(&dm.Left, -int64(n))
 
@@ -182,20 +189,49 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		"left":       atomic.LoadInt64(&dm.Left),
 	}).Debug("Updated download progress")
 
-	// Mark block as received
+	// Mark block as received.
 	piece.Blocks[blockNum] = true
 
-	// Check if piece is completed
+	// Check if the piece is completed.
 	if !piece.Completed && dm.isPieceComplete(piece) {
-		dm.Bitfield.Set(index)
-		log.WithFields(logrus.Fields{
-			"piece_index":  index,
-			"total_pieces": dm.Writer.Info().CountPieces(),
-			"progress":     fmt.Sprintf("%.2f%%", float64(index+1)/float64(dm.Writer.Info().CountPieces())*100),
-		}).Info("Completed piece")
+		// Verify the piece's integrity.
+		if dm.VerifyPiece(index) {
+			dm.Bitfield.Set(index)
+			piece.Completed = true
+			log.WithFields(logrus.Fields{
+				"piece_index":  index,
+				"total_pieces": len(dm.Pieces),
+				"progress":     fmt.Sprintf("%.2f%%", float64(index+1)/float64(len(dm.Pieces))*100),
+			}).Info("Completed piece")
+
+			// Advertise the newly completed piece to all connected peers.
+			for _, peerConn := range dm.Peers {
+				err := peerConn.SendHave(index)
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"peer":        peerConn.RemoteAddr().String(),
+						"piece_index": index,
+					}).WithError(err).Error("Failed to send Have message to peer")
+					// Optionally handle the error, e.g., remove the unresponsive peer.
+				} else {
+					log.WithFields(logrus.Fields{
+						"peer":        peerConn.RemoteAddr().String(),
+						"piece_index": index,
+					}).Info("Sent Have message to peer")
+				}
+			}
+		} else {
+			log.WithFields(logrus.Fields{
+				"piece_index": index,
+			}).Error("Piece verification failed")
+			// Verification
+			for i := range piece.Blocks {
+				piece.Blocks[i] = false
+			}
+		}
 	}
 
-	// After marking the block as received and checking piece completion
+	// Handle endgame scenarios.
 	if dm.IsEndgame() && atomic.LoadInt64(&dm.Left) <= 0 {
 		log.Info("Endgame completed, finalizing download")
 		dm.RequestAllRemainingBlocks(dm.GetAllPeers())
@@ -205,22 +241,7 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 				log.WithError(err).Error("Failed to finalize download")
 				return err
 			}
-			// Notify user
-		}
-	}
-
-	// Verify the piece if it's completed
-	if !piece.Completed && dm.isPieceComplete(piece) {
-		if dm.VerifyPiece(index) {
-			dm.Bitfield.Set(index)
-			log.WithFields(logrus.Fields{
-				"piece_index": index,
-			}).Info("Piece verified and added to bitfield")
-		} else {
-			log.WithFields(logrus.Fields{
-				"piece_index": index,
-			}).Error("Piece verification failed")
-			// Handle verification failure (e.g., mark piece as incomplete, request again)
+			// Notify UI here
 		}
 	}
 
@@ -229,6 +250,7 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		"block_num":     blockNum,
 		"bytes_written": n,
 	}).Debug("Successfully processed block")
+
 	return nil
 }
 
@@ -562,8 +584,7 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 
 	if len(info.Files) == 0 {
 		// Single-file torrent
-		filePath := info.Name
-		//filePath := filepath.Join(dm.DownloadDir, fileInfo.Path(info))
+		filePath := filepath.Join(dm.DownloadDir, info.Name)
 		file, err := os.Open(filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
@@ -617,4 +638,122 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 	}
 	log.WithField("piece_index", index).Debug("Successfully read piece from disk")
 	return pieceData, nil
+}
+
+// GetBlock retrieves a specific block of data from the downloaded files.
+// pieceIndex: The index of the piece.
+// offset: The byte offset within the piece where the block starts.
+// length: The length of the block in bytes.
+func (dm *DownloadManager) GetBlock(pieceIndex, offset, length uint32) ([]byte, error) {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+
+	log := log.WithFields(logrus.Fields{
+		"piece_index": pieceIndex,
+		"offset":      offset,
+		"length":      length,
+	})
+
+	// Validate pieceIndex
+	if int(pieceIndex) >= len(dm.Pieces) {
+		log.Error("Invalid piece index")
+		return nil, fmt.Errorf("invalid piece index: %d", pieceIndex)
+	}
+
+	piece := dm.Pieces[pieceIndex]
+
+	// Example: Check if the block has already been received
+	if piece.Blocks[offset/downloader.BlockSize] {
+		log.Warn("Block already received")
+		return nil, fmt.Errorf("block already received")
+	}
+
+	// Validate offset and length
+	info := dm.Writer.Info()
+	pieceLength := info.PieceLength
+	totalPieces := info.CountPieces()
+
+	if int(pieceIndex) == totalPieces-1 {
+		// Last piece may have a different length
+		remaining := info.TotalLength() - int64(pieceIndex)*pieceLength
+		if int64(offset)+int64(length) > remaining {
+			log.Error("Requested block exceeds piece boundaries")
+			return nil, fmt.Errorf("requested block exceeds piece boundaries")
+		}
+	} else {
+		if int64(offset)+int64(length) > int64(pieceLength) {
+			log.Error("Requested block exceeds piece boundaries")
+			return nil, fmt.Errorf("requested block exceeds piece boundaries")
+		}
+	}
+
+	// Determine if it's a single-file or multi-file torrent
+	var filePath string
+	var fileOffset int64
+
+	if len(info.Files) == 0 {
+		// Single-file torrent
+		filePath = filepath.Join(dm.DownloadDir, info.Name)
+		fileOffset = int64(pieceIndex)*int64(pieceLength) + int64(offset)
+	} else {
+		// Multi-file torrent
+		// Iterate through the files to find which file contains the block
+		cumulative := int64(0)
+		for _, fileInfo := range info.Files {
+			if cumulative+fileInfo.Length > int64(pieceIndex)*int64(pieceLength)+int64(offset) {
+				filePath = filepath.Join(dm.DownloadDir, fileInfo.Path(info))
+				fileOffset = int64(pieceIndex)*int64(pieceLength) + int64(offset) - cumulative
+				break
+			}
+			cumulative += fileInfo.Length
+		}
+
+		// If filePath is still empty, it means the block spans multiple files
+		if filePath == "" {
+			log.Error("Block spans multiple files, which is not supported")
+			return nil, fmt.Errorf("block spans multiple files, which is not supported")
+		}
+	}
+
+	// Open the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.WithError(err).Error("Failed to open file for reading block")
+		return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
+	}
+	defer file.Close()
+
+	// Seek to the fileOffset
+	_, err = file.Seek(fileOffset, io.SeekStart)
+	if err != nil {
+		log.WithError(err).Error("Failed to seek to block offset")
+		return nil, fmt.Errorf("failed to seek to offset %d in file %s: %v", fileOffset, filePath, err)
+	}
+
+	// Read the block
+	blockData := make([]byte, length)
+	n, err := io.ReadFull(file, blockData)
+	if err != nil {
+		log.WithError(err).Error("Failed to read block data")
+		return nil, fmt.Errorf("failed to read block data: %v", err)
+	}
+	if uint32(n) != length {
+		log.WithFields(logrus.Fields{
+			"expected_length": length,
+			"read_length":     n,
+		}).Error("Incomplete block read")
+		return nil, fmt.Errorf("incomplete block read: expected %d bytes, got %d bytes", length, n)
+	}
+
+	// Example: Mark the block as received
+	piece.Blocks[offset/downloader.BlockSize] = true
+
+	// Example: Check if the piece is complete
+	if dm.isPieceComplete(piece) {
+		log.Info("Piece completed")
+		// Additional logic for completed piece
+	}
+
+	log.Debug("Successfully retrieved block data")
+	return blockData, nil
 }

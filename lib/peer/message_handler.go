@@ -127,8 +127,27 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 			"piece_index": msg.Index,
 			"begin":       msg.Begin,
 			"length":      msg.Length,
-		}).Debug("Received Request message")
-		// Handle requests from peers (uploading)
+		}).Info("Received Request message from peer")
+
+		// Handle upload request
+		blockData, err := dm.GetBlock(msg.Index, msg.Begin, msg.Length)
+		if err != nil {
+			log.WithError(err).Error("Failed to retrieve requested block")
+			return err
+		}
+
+		// Send the piece message back to the peer
+		err = pc.SendPiece(msg.Index, msg.Begin, blockData)
+		if err != nil {
+			log.WithError(err).Error("Failed to send Piece message to peer")
+			return err
+		}
+
+		log.WithFields(logrus.Fields{
+			"piece_index": msg.Index,
+			"begin":       msg.Begin,
+			"length":      msg.Length,
+		}).Info("Sent Piece message in response to Request")
 	case pp.MTypeCancel:
 		log.WithFields(logrus.Fields{
 			"piece_index": msg.Index,

@@ -26,13 +26,16 @@ import (
 
 // Add this struct to track download statistics
 type DownloadStats struct {
-	StartTime          time.Time
-	LastProgressUpdate time.Time
-	TotalBytesReceived int64
-	CurrentSpeed       float64
-	PeakSpeed          float64
-	ActiveConnections  int
-	mu                 sync.Mutex
+	StartTime            time.Time
+	LastProgressUpdate   time.Time
+	TotalBytesReceived   int64
+	CurrentDownloadSpeed float64
+	PeakDownloadSpeed    float64
+	TotalBytesUploaded   int64
+	CurrentUploadSpeed   float64
+	PeakUploadSpeed      float64
+	ActiveConnections    int
+	mu                   sync.Mutex
 }
 
 func NewDownloadStats() *DownloadStats {
@@ -43,29 +46,38 @@ func NewDownloadStats() *DownloadStats {
 	}
 }
 
-func (stats *DownloadStats) UpdateProgress(bytesReceived int64) {
+// UpdateProgress updates both download and upload statistics
+func (stats *DownloadStats) UpdateProgress(bytesReceived int64, bytesUploaded int64) {
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
 
 	now := time.Now()
 	duration := now.Sub(stats.LastProgressUpdate).Seconds()
 	if duration > 0 {
-		stats.CurrentSpeed = float64(bytesReceived) / duration
-		if stats.CurrentSpeed > stats.PeakSpeed {
-			stats.PeakSpeed = stats.CurrentSpeed
+		stats.CurrentDownloadSpeed = float64(bytesReceived) / duration
+		stats.CurrentUploadSpeed = float64(bytesUploaded) / duration
+		if stats.CurrentDownloadSpeed > stats.PeakDownloadSpeed {
+			stats.PeakDownloadSpeed = stats.CurrentDownloadSpeed
+		}
+		if stats.CurrentUploadSpeed > stats.PeakUploadSpeed {
+			stats.PeakUploadSpeed = stats.CurrentUploadSpeed
 		}
 	}
 
 	stats.TotalBytesReceived += bytesReceived
+	stats.TotalBytesUploaded += bytesUploaded
 	stats.LastProgressUpdate = now
 
-	log.WithFields(logrus.Fields{
-		"current_speed_kBps": stats.CurrentSpeed / 1024,
-		"peak_speed_kBps":    stats.PeakSpeed / 1024,
-		"total_received_MB":  float64(stats.TotalBytesReceived) / 1024 / 1024,
-		"elapsed_time":       now.Sub(stats.StartTime).String(),
-		"active_connections": stats.ActiveConnections,
-	}).Info("Download statistics update")
+	logrus.WithFields(logrus.Fields{
+		"current_download_speed_kBps": stats.CurrentDownloadSpeed / 1024,
+		"peak_download_speed_kBps":    stats.PeakDownloadSpeed / 1024,
+		"current_upload_speed_kBps":   stats.CurrentUploadSpeed / 1024,
+		"peak_upload_speed_kBps":      stats.PeakUploadSpeed / 1024,
+		"total_received_MB":           float64(stats.TotalBytesReceived) / 1024 / 1024,
+		"total_uploaded_MB":           float64(stats.TotalBytesUploaded) / 1024 / 1024,
+		"elapsed_time":                now.Sub(stats.StartTime).String(),
+		"active_connections":          stats.ActiveConnections,
+	}).Info("Download and Upload statistics update")
 }
 
 func (stats *DownloadStats) ConnectionStarted() {
