@@ -49,15 +49,6 @@ import (
 	"os"
 )
 
-/*
-	//Trackers
-
-"ahsplxkbhemefwvvml7qovzl5a2b5xo5i7lyai7ntdunvcyfdtna.b32.i2p //tracker2.postman.i2p
-"w7tpbzncbcocrqtwwm3nezhnnsw4ozadvi2hmvzdhrqzfxfum7wa.b32.i2p // opentracker.dg2.i2p
-"afuuortfaqejkesne272krqvmafn65mhls6nvcwv3t7l2ic2p4kq.b32.i2p // lyoko.i2p
-"s5ikrdyjwbcgxmqetxb3nyheizftms7euacuub2hic7defkh3xhq.b32.i2p // tracker.thebland.i2p
-"nfrjvknwcw47itotkzmk6mdlxmxfxsxhbhlr5ozhlsuavcogv4hq.b32.i2p // torrfreedom.i2p
-*/
 var (
 	log          = logrus.StandardLogger()
 	maxRetries   = 20
@@ -78,33 +69,31 @@ func init() {
 }
 
 func main() {
-	// Initialize the Fyne application
 	myApp := app.New()
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
 	myWindow := myApp.NewWindow("EepTorrent")
 
-	// Set background (optional)
 	background := canvas.NewImageFromResource(logo.ResourceLogoPng)
 	background.FillMode = canvas.ImageFillContain // Adjust as needed: FillOriginal, FillContain, FillFill, FillStretch
 
-	// Show disclaimer
 	showDisclaimer(myApp, myWindow)
 
-	// Create UI components for the main content
+	var dm *download.DownloadManager
+	var wg sync.WaitGroup
+	var downloadInProgress bool
+	var downloadCancel context.CancelFunc
+
 	progressBar := widget.NewProgressBar()
 	statusLabel := widget.NewLabel("Ready")
 	startButton := widget.NewButton("Start Download", nil)
 	stopButton := widget.NewButton("Stop Download", nil)
 	stopButton.Disable()
 
-	// Variables to manage download state
-	var dm *download.DownloadManager
-	var wg sync.WaitGroup
-	var downloadInProgress bool
-	var downloadCancel context.CancelFunc
+	downloadSpeedLabel := widget.NewLabel("Download Speed: 0 KB/s")
+	uploadSpeedLabel := widget.NewLabel("Upload Speed: 0 KB/s")
+	totalUploadedLabel := widget.NewLabel("Total Uploaded: 0 MB")
 
-	// Create the settings form
 	downloadDirEntry := widget.NewEntry()
 	downloadDirEntry.SetPlaceHolder("Select download directory")
 	downloadDirButton := widget.NewButton("Browse", func() {
@@ -117,10 +106,9 @@ func main() {
 	})
 
 	maxConnectionsEntry := widget.NewEntry()
-	maxConnectionsEntry.SetText("50") // Default value
+	maxConnectionsEntry.SetText("50")
 
 	loggingLevelSelect := widget.NewSelect([]string{"Debug", "Info", "Warning", "Error", "Fatal", "Panic"}, func(value string) {
-		// Adjust log level based on selection
 		switch value {
 		case "Debug":
 			log.SetLevel(logrus.DebugLevel)
@@ -137,7 +125,7 @@ func main() {
 		}
 	})
 	loggingLevelSelect.SetSelected("Debug")
-	// Assemble the settings form
+
 	settingsForm := widget.NewForm(
 		widget.NewFormItem("Download Directory", container.NewHBox(downloadDirEntry, downloadDirButton)),
 		widget.NewFormItem("Max Connections", maxConnectionsEntry),
@@ -145,37 +133,76 @@ func main() {
 	)
 	settingsForm.Resize(fyne.NewSize(600, settingsForm.Size().Height))
 
-	// Create the side menu (settings)
-	sideMenu := container.NewVBox(
-		widget.NewLabelWithStyle("Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		settingsForm,
+	// Define content for other menu items
+	//downloadsContent := widget.NewLabel("Downloads content goes here.")
+	uploadsContent := widget.NewLabel("Uploads content goes here.")
+	peersContent := widget.NewLabel("Peers content goes here.")
+	logsContent := widget.NewMultiLineEntry()
+	//logsContent.SetReadOnly(true)
+	logsContent.SetPlaceHolder("Logs will appear here.")
+
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+			logFileMux.Lock()
+			logsContent.SetText(logBuffer.String())
+			logFileMux.Unlock()
+		}
+	}()
+
+	mainContent := container.NewStack()
+	menuItems := []string{"Settings", "Downloads", "Uploads", "Peers", "Logs"}
+
+	menuList := widget.NewList(
+		func() int {
+			return len(menuItems)
+		},
+		func() fyne.CanvasObject {
+			return widget.NewLabel("")
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			o.(*widget.Label).SetText(menuItems[i])
+		},
 	)
 
-	downloadSpeedLabel := widget.NewLabel("Download Speed: 0 KB/s")
-	uploadSpeedLabel := widget.NewLabel("Upload Speed: 0 KB/s")
-	totalUploadedLabel := widget.NewLabel("Total Uploaded: 0 MB")
+	menuList.OnSelected = func(id widget.ListItemID) {
+		selectedItem := menuItems[id]
+		switch selectedItem {
+		case "Settings":
+			mainContent.Objects = []fyne.CanvasObject{settingsForm}
+		case "Downloads":
+			downloadsVBox := container.NewVBox(
+				progressBar,
+				downloadSpeedLabel,
+				uploadSpeedLabel,
+				totalUploadedLabel,
+				statusLabel,
+				container.NewHBox(startButton, stopButton),
+			)
+			mainContent.Objects = []fyne.CanvasObject{downloadsVBox}
+		case "Uploads":
+			mainContent.Objects = []fyne.CanvasObject{uploadsContent}
+		case "Peers":
+			mainContent.Objects = []fyne.CanvasObject{peersContent}
+		case "Logs":
+			mainContent.Objects = []fyne.CanvasObject{logsContent}
+		}
+		mainContent.Refresh()
+	}
 
-	// Create the main content area
-	mainContent := container.NewVBox(
-		progressBar,
-		downloadSpeedLabel,
-		uploadSpeedLabel,
-		totalUploadedLabel,
-		statusLabel,
-		container.NewHBox(startButton, stopButton),
-	)
+	menuList.Select(0)
 
-	// Layout the UI components with side menu
-	content := container.NewBorder(nil, nil, sideMenu, nil, mainContent)
+	scrollableMenu := container.NewVScroll(menuList)
+	scrollableMenu.SetMinSize(fyne.NewSize(150, 0))
+
+	content := container.NewBorder(nil, nil, scrollableMenu, nil, mainContent)
 
 	myWindow.SetContent(content)
 	myWindow.Resize(fyne.NewSize(800, 600))
 
-	// Add a menu bar
 	menu := fyne.NewMainMenu(
 		fyne.NewMenu("File",
 			fyne.NewMenuItem("Open Torrent File...", func() {
-				// Trigger the start button action
 				startButton.OnTapped()
 			}),
 			fyne.NewMenuItem("Save Logs to File...", func() {
@@ -240,8 +267,8 @@ func main() {
 		),
 		fyne.NewMenu("Edit",
 			fyne.NewMenuItem("Preferences", func() {
-				// Focus on the settings side menu or open a preferences dialog
-				// For now, we'll do nothing as settings are always visible
+				// Focus on the settings side menu
+				menuList.Select(0) // Select "Settings"
 			}),
 		),
 		fyne.NewMenu("Help",
@@ -261,7 +288,6 @@ func main() {
 		logFileMux.Unlock()
 	})
 
-	// Start button handler
 	startButton.OnTapped = func() {
 		if downloadInProgress {
 			return
@@ -350,7 +376,7 @@ func main() {
 				writer := metainfo.NewWriter(outputPath, info, mode)
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
 				dm.DownloadDir = downloadDir
-				progressTicker := time.NewTicker(10 * time.Second)
+				progressTicker := time.NewTicker(1 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
 
@@ -444,7 +470,7 @@ func main() {
 					wg.Add(1)
 					go func(peerHash []byte, index int) {
 						defer wg.Done()
-						//stats.ConnectionStarted() // Assuming you have stats tracking
+						//stats.ConnectionStarted() //
 						//defer stats.ConnectionEnded()
 						retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
 					}(uniquePeers[i], i)
@@ -464,14 +490,6 @@ func main() {
 			}()
 		}, myWindow)
 	}
-	// Ensure log file is closed on application exit
-	defer func() {
-		logFileMux.Lock()
-		if logFile != nil {
-			logFile.Close()
-		}
-		logFileMux.Unlock()
-	}()
 
 	// Stop button handler
 	stopButton.OnTapped = func() {
@@ -488,12 +506,10 @@ func main() {
 	myWindow.ShowAndRun()
 }
 
-// Helper function to display errors
 func showError(title string, err error, parent fyne.Window) {
 	dialog.ShowError(fmt.Errorf("%s: %v", title, err), parent)
 }
 
-// Helper function to show the About dialog
 func showAboutDialog(app fyne.App, parent fyne.Window) {
 	gitCommitDisplay := util.GitCommit
 	dialog.ShowCustom("About EepTorrent", "Close",
@@ -545,6 +561,7 @@ func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.
 
 	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
 }
+
 func removeDuplicatePeers(peers [][]byte) [][]byte {
 	peerSet := make(map[string]struct{})
 	uniquePeers := make([][]byte, 0, len(peers))
@@ -560,14 +577,12 @@ func removeDuplicatePeers(peers [][]byte) [][]byte {
 }
 
 func showDisclaimer(app fyne.App, parent fyne.Window) {
-	// Create the content for the disclaimer
 	disclaimerContent := container.NewVBox(
 		widget.NewLabelWithStyle("Disclaimer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things. Please note that metrics may be inaccurate as this program is in flux.\nBut at the same time will be updated frequently, check back for updates!"),
 		widget.NewLabel("EepTorrent Copyright (C) 2024 Haris Khan\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it under certain conditions. See COPYING for details."),
 	)
 
-	// Create the custom confirmation dialog
 	dialog := dialog.NewCustomConfirm(
 		"Experimental Software",
 		"Accept",
@@ -575,34 +590,28 @@ func showDisclaimer(app fyne.App, parent fyne.Window) {
 		disclaimerContent,
 		func(accepted bool) {
 			if !accepted {
-				// User declined the disclaimer; exit the application
 				app.Quit()
 			}
-			// If accepted, do nothing and allow the application to continue
 		},
 		parent,
 	)
 
-	// Make the dialog modal (prevents interaction with other windows until closed)
 	dialog.SetDismissText("Decline")
 	dialog.Show()
 }
 
 // In startPeerListener function
 func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) error {
-	// Generate keys for the listener session
 	keys, err := i2p.GlobalSAM.NewKeys()
 	if err != nil {
 		return fmt.Errorf("Failed to generate keys for listener session: %v", err)
 	}
 
-	// Create the listener session
 	listenerSession, err := i2p.GlobalSAM.NewStreamSession("listenerSession", keys, sam3.Options_Default)
 	if err != nil {
 		return fmt.Errorf("Failed to create listener session: %v", err)
 	}
 
-	// Start listening for incoming connections
 	listener, err := listenerSession.Listen()
 	if err != nil {
 		return fmt.Errorf("Failed to start listening: %v", err)
@@ -624,25 +633,20 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) erro
 func handleIncomingConnection(conn net.Conn, dm *download.DownloadManager, mi *metainfo.MetaInfo) {
 	defer conn.Close()
 
-	// Generate peer ID
 	peerIDMeta := util.GeneratePeerIdMeta()
 
-	// Perform handshake
 	err := peer.PerformHandshake(conn, mi.InfoHash().Bytes(), string(peerIDMeta[:]))
 	if err != nil {
 		log.WithError(err).Error("Handshake failed with incoming peer")
 		return
 	}
 
-	// Wrap the connection
 	pc := pp.NewPeerConn(conn, peerIDMeta, mi.InfoHash())
 	pc.Timeout = 30 * time.Second
 
-	// Add the peer to the DownloadManager
 	dm.AddPeer(pc)
 	defer dm.RemovePeer(pc)
 
-	// Start handling messages
 	err = peer.HandlePeerConnection(context.Background(), pc, dm)
 	if err != nil {
 		log.WithError(err).Error("Error handling incoming peer connection")
