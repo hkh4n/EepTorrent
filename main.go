@@ -33,10 +33,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
-	"github.com/go-i2p/sam3"
 	"github.com/sirupsen/logrus"
-	"net"
+	"image/color"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -60,6 +58,9 @@ var (
 	log          = logrus.StandardLogger()
 	maxRetries   = 20
 	initialDelay = 2 * time.Second
+	logFile      *os.File
+	logFileMux   sync.Mutex
+	logBuffer    bytes.Buffer
 )
 
 func init() {
@@ -68,13 +69,14 @@ func init() {
 		FullTimestamp: true,
 		DisableColors: false,
 	})
+	log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer))
 	log.SetLevel(logrus.DebugLevel)
 }
 
 func main() {
 	// Initialize the Fyne application
 	myApp := app.New()
-	myApp.SetIcon(logo.ResourceLogo32Png) // Ensure you have the correct icon resource
+	myApp.SetIcon(logo.ResourceLogo32Png)
 
 	myWindow := myApp.NewWindow("EepTorrent")
 
@@ -131,7 +133,6 @@ func main() {
 		}
 	})
 	loggingLevelSelect.SetSelected("Debug")
-
 	// Assemble the settings form
 	settingsForm := widget.NewForm(
 		widget.NewFormItem("Download Directory", container.NewHBox(downloadDirEntry, downloadDirButton)),
@@ -173,6 +174,61 @@ func main() {
 				// Trigger the start button action
 				startButton.OnTapped()
 			}),
+			fyne.NewMenuItem("Save Logs to File...", func() {
+				saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
+					if err != nil {
+						showError("Save Logs Error", err, myWindow)
+						return
+					}
+					if writer == nil {
+						// User canceled the dialog
+						return
+					}
+					logFilePath := writer.URI().Path()
+					writer.Close() // Close immediately after getting the path
+
+					if logFilePath == "" {
+						showError("Invalid File Path", fmt.Errorf("No file path selected"), myWindow)
+						return
+					}
+
+					// Open the selected log file
+					file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err != nil {
+						showError("Failed to Open Log File", err, myWindow)
+						return
+					}
+
+					// Safely update the log output
+					logFileMux.Lock()
+					defer logFileMux.Unlock()
+
+					// Write the contents of logBuffer to the file
+					_, err = file.Write(logBuffer.Bytes())
+					if err != nil {
+						showError("Failed to Write Logs to File", err, myWindow)
+						file.Close()
+						return
+					}
+
+					// If a log file was previously open, close it
+					if logFile != nil {
+						logFile.Close()
+					}
+
+					logFile = file
+					// Set Logrus to write to os.Stderr, logBuffer, and the file
+					log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer, logFile))
+					log.Info("Logging to file enabled")
+					dialog.ShowInformation("Logging Enabled", fmt.Sprintf("Logs are being saved to:\n%s", logFilePath), myWindow)
+				}, myWindow)
+
+				// Set the default file name
+				saveDialog.SetFileName("eeptorrent.log")
+
+				// Show the save dialog
+				saveDialog.Show()
+			}),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("Quit", func() {
 				myApp.Quit()
@@ -191,6 +247,15 @@ func main() {
 		),
 	)
 	myWindow.SetMainMenu(menu)
+
+	// Ensure log file is closed on application exit
+	myWindow.SetOnClosed(func() {
+		logFileMux.Lock()
+		if logFile != nil {
+			logFile.Close()
+		}
+		logFileMux.Unlock()
+	})
 
 	// Start button handler
 	startButton.OnTapped = func() {
@@ -395,6 +460,14 @@ func main() {
 			}()
 		}, myWindow)
 	}
+	// Ensure log file is closed on application exit
+	defer func() {
+		logFileMux.Lock()
+		if logFile != nil {
+			logFile.Close()
+		}
+		logFileMux.Unlock()
+	}()
 
 	// Stop button handler
 	stopButton.OnTapped = func() {
