@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 import (
+	"bytes"
 	"context"
 	"eeptorrent/lib/download"
 	"eeptorrent/lib/i2p"
@@ -33,8 +34,11 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
+	"github.com/go-i2p/sam3"
 	"github.com/sirupsen/logrus"
-	"image/color"
+	"io"
+	"net"
 	"path/filepath"
 	"strconv"
 	"sync"
