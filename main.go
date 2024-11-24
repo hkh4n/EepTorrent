@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"eeptorrent/lib/download"
+	"eeptorrent/lib/gui"
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
@@ -39,7 +40,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/wcharczuk/go-chart"
 	"io"
-	"math/rand"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -191,13 +191,18 @@ func init() {
 }
 
 func main() {
+	err := i2p.InitSAM()
+	if err != nil {
+		log.Fatalf("Failed to initialize SAM: %v", err)
+	}
+	defer i2p.CloseSAM()
 	// Initialize the Fyne application with a unique ID to satisfy Preferences API
 	myApp := app.NewWithID("com.i2p.EepTorrent")
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
 	myWindow := myApp.NewWindow("EepTorrent")
 
-	showDisclaimer(myApp, myWindow)
+	gui.ShowDisclaimer(myApp, myWindow)
 
 	var dm *download.DownloadManager
 	var wg sync.WaitGroup
@@ -262,11 +267,32 @@ func main() {
 	metricsContent := container.NewVBox()
 
 	// Periodically update logsContent with logBuffer
+	/*
+		go func() {
+			for {
+				time.Sleep(1 * time.Second)
+				logFileMux.Lock()
+				logsContent.SetText(logBuffer.String())
+				logFileMux.Unlock()
+			}
+		}()
+
+	*/
 	go func() {
+		const maxLogLength = 3600 // Define maximum log length
+		var previousLogs string
 		for {
-			time.Sleep(1 * time.Second)
+			time.Sleep(1 * time.Second) // Adjust the interval as needed
 			logFileMux.Lock()
-			logsContent.SetText(logBuffer.String())
+			currentLogs := logBuffer.String()
+			if currentLogs != previousLogs {
+				// Trim the log to the last maxLogLength characters if necessary
+				if len(currentLogs) > maxLogLength {
+					currentLogs = currentLogs[len(currentLogs)-maxLogLength:]
+				}
+				logsContent.SetText(currentLogs)
+				previousLogs = currentLogs
+			}
 			logFileMux.Unlock()
 		}
 	}()
@@ -347,7 +373,7 @@ func main() {
 			fyne.NewMenuItem("Save Logs to File...", func() {
 				saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
 					if err != nil {
-						showError("Save Logs Error", err, myWindow)
+						gui.ShowError("Save Logs Error", err, myWindow)
 						return
 					}
 					if writer == nil {
@@ -358,14 +384,14 @@ func main() {
 					writer.Close() // Close immediately after getting the path
 
 					if logFilePath == "" {
-						showError("Invalid File Path", fmt.Errorf("No file path selected"), myWindow)
+						gui.ShowError("Invalid File Path", fmt.Errorf("No file path selected"), myWindow)
 						return
 					}
 
 					// Open the selected log file
 					file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 					if err != nil {
-						showError("Failed to Open Log File", err, myWindow)
+						gui.ShowError("Failed to Open Log File", err, myWindow)
 						return
 					}
 
@@ -376,7 +402,7 @@ func main() {
 					// Write the contents of logBuffer to the file
 					_, err = file.Write(logBuffer.Bytes())
 					if err != nil {
-						showError("Failed to Write Logs to File", err, myWindow)
+						gui.ShowError("Failed to Write Logs to File", err, myWindow)
 						file.Close()
 						return
 					}
@@ -412,7 +438,7 @@ func main() {
 		),
 		fyne.NewMenu("Help",
 			fyne.NewMenuItem("About", func() {
-				showAboutDialog(myApp, myWindow)
+				gui.ShowAboutDialog(myApp, myWindow)
 			}),
 		),
 	)
@@ -428,22 +454,25 @@ func main() {
 	})
 
 	// Initialize ChartData and start a goroutine to update the chart periodically
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				// Replace with actual download and upload speeds
-				downloadSpeed := rand.Float64() * 100
-				uploadSpeed := rand.Float64() * 50
-				chartData.AddPoint(downloadSpeed, uploadSpeed)
+	/*
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					// Replace with actual download and upload speeds
+					downloadSpeed := rand.Float64() * 100
+					uploadSpeed := rand.Float64() * 50
+					chartData.AddPoint(downloadSpeed, uploadSpeed)
 
-				// Update the chart on the main thread
-				updateMetricsChart(chartData, chartImage, myApp)
+					// Update the chart on the main thread
+					updateMetricsChart(chartData, chartImage, myApp)
+				}
 			}
-		}
-	}()
+		}()
+
+	*/
 
 	startButton.OnTapped = func() {
 		if downloadInProgress {
@@ -453,13 +482,13 @@ func main() {
 		// Validate and apply settings
 		downloadDir := downloadDirEntry.Text
 		if downloadDir == "" {
-			showError("Invalid Settings", fmt.Errorf("Please select a download directory"), myWindow)
+			gui.ShowError("Invalid Settings", fmt.Errorf("Please select a download directory"), myWindow)
 			return
 		}
 
 		maxConnections, err := strconv.Atoi(maxConnectionsEntry.Text)
 		if err != nil || maxConnections <= 0 {
-			showError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
+			gui.ShowError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
 			return
 		}
 
@@ -490,24 +519,16 @@ func main() {
 				stats := download.NewDownloadStats()
 				_ = stats
 
-				// Initialize SAM
-				err := i2p.InitSAM()
-				if err != nil {
-					showError("Failed to initialize SAM", err, myWindow)
-					return
-				}
-				defer i2p.CloseSAM()
-
 				// Load the torrent file
 				mi, err := metainfo.LoadFromFile(torrentFilePath)
 				if err != nil {
-					showError("Failed to load torrent", err, myWindow)
+					gui.ShowError("Failed to load torrent", err, myWindow)
 					return
 				}
 
 				info, err := mi.Info()
 				if err != nil {
-					showError("Failed to parse torrent info", err, myWindow)
+					gui.ShowError("Failed to parse torrent info", err, myWindow)
 					return
 				}
 
@@ -525,7 +546,7 @@ func main() {
 					// Create the directory if it doesn't exist
 					err := os.MkdirAll(outputPath, mode)
 					if err != nil && !os.IsExist(err) {
-						showError("Failed to create output directory", err, myWindow)
+						gui.ShowError("Failed to create output directory", err, myWindow)
 						return
 					}
 				}
@@ -538,12 +559,15 @@ func main() {
 				downloadCancel = cancel
 
 				// Start the listener for incoming connections (seeding)
-				go func() {
-					err := startPeerListener(dm, &mi)
-					if err != nil {
-						log.WithError(err).Error("Failed to start peer listener")
-					}
-				}()
+				/*
+					go func() {
+						err := startPeerListener(dm, &mi)
+						if err != nil {
+							log.WithError(err).Error("Failed to start peer listener")
+						}
+					}()
+
+				*/
 
 				// Progress updater
 				go func() {
@@ -573,7 +597,7 @@ func main() {
 							uploadSpeedLabel.SetText(fmt.Sprintf("Upload Speed: %.2f KB/s", uploadSpeedKBps))
 							totalUploadedLabel.SetText(fmt.Sprintf("Total Uploaded: %.2f MB", float64(dm.Uploaded)/1024/1024))
 
-							// Update the chart
+							// Update the chart with real speeds
 							chartData.AddPoint(downloadSpeedKBps, uploadSpeedKBps)
 							updateMetricsChart(chartData, chartImage, myApp)
 
@@ -593,6 +617,7 @@ func main() {
 				} else {
 					allPeers = append(allPeers, peersPostman...)
 				}
+				time.Sleep(1 * time.Second)
 
 				peersSimp, err := tracker.GetPeersFromSimpTracker(&mi)
 				if err != nil {
@@ -600,6 +625,7 @@ func main() {
 				} else {
 					allPeers = append(allPeers, peersSimp...)
 				}
+				time.Sleep(1 * time.Second)
 
 				peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi)
 				if err != nil {
@@ -607,6 +633,7 @@ func main() {
 				} else {
 					allPeers = append(allPeers, peersDg2...)
 				}
+				time.Sleep(1 * time.Second)
 
 				peersSkank, err := tracker.GetPeersFromSkankTracker(&mi)
 				if err != nil {
@@ -614,9 +641,10 @@ func main() {
 				} else {
 					allPeers = append(allPeers, peersSkank...)
 				}
+				time.Sleep(1 * time.Second)
 
 				if len(allPeers) == 0 {
-					showError("Failed to get peers from any tracker", fmt.Errorf("No peers found"), myWindow)
+					gui.ShowError("Failed to get peers from any tracker", fmt.Errorf("No peers found"), myWindow)
 					return
 				}
 				uniquePeers := removeDuplicatePeers(allPeers)
@@ -666,21 +694,6 @@ func main() {
 
 	// Show the window and start the GUI event loop
 	myWindow.ShowAndRun()
-}
-
-func showError(title string, err error, parent fyne.Window) {
-	dialog.ShowError(fmt.Errorf("%s: %v", title, err), parent)
-}
-
-func showAboutDialog(app fyne.App, parent fyne.Window) {
-	gitCommitDisplay := util.GitCommit
-	dialog.ShowCustom("About EepTorrent", "Close",
-		container.NewVBox(
-			widget.NewLabelWithStyle("EepTorrent", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-			widget.NewLabel(fmt.Sprintf("Version: %s-%s", util.Version, gitCommitDisplay)),
-			widget.NewLabel("A cross-platform I2P-only BitTorrent client."),
-			widget.NewLabel("© 2024 Haris Khan"),
-		), parent)
 }
 
 // retryConnect attempts to connect to a peer with retry logic.
@@ -738,38 +751,14 @@ func removeDuplicatePeers(peers [][]byte) [][]byte {
 	return uniquePeers
 }
 
-func showDisclaimer(app fyne.App, parent fyne.Window) {
-	disclaimerContent := container.NewVBox(
-		widget.NewLabelWithStyle("Disclaimer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("EepTorrent is experimental software. It will have bugs, faulty GUIs and other things. Please note that metrics may be inaccurate as this program is in flux.\nBut at the same time will be updated frequently, check back for updates!"),
-		widget.NewLabel("EepTorrent Copyright (C) 2024 Haris Khan\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it under certain conditions. See COPYING for details."),
-	)
-
-	dialog := dialog.NewCustomConfirm(
-		"Experimental Software",
-		"Accept",
-		"Decline",
-		disclaimerContent,
-		func(accepted bool) {
-			if !accepted {
-				app.Quit()
-			}
-		},
-		parent,
-	)
-
-	dialog.SetDismissText("Decline")
-	dialog.Show()
-}
-
 // In startPeerListener function
 func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) error {
 	keys, err := i2p.GlobalSAM.NewKeys()
 	if err != nil {
 		return fmt.Errorf("Failed to generate keys for listener session: %v", err)
 	}
-
-	listenerSession, err := i2p.GlobalSAM.NewStreamSession("listenerSession", keys, sam3.Options_Default)
+	sessionName := fmt.Sprintf("EepTorrent-listenerSession-%d", os.Getpid())
+	listenerSession, err := i2p.GlobalSAM.NewStreamSession(sessionName, keys, sam3.Options_Default)
 	if err != nil {
 		return fmt.Errorf("Failed to create listener session: %v", err)
 	}
