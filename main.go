@@ -257,7 +257,8 @@ func main() {
 	// Define content for other menu items
 	uploadsContent := widget.NewLabel("Uploads content goes here.")
 	peersContent := widget.NewLabel("Peers content goes here.")
-	logsContent := widget.NewMultiLineEntry()
+	logsContent := widget.NewLabel("")
+	logsContent.Wrapping = fyne.TextWrapWord
 	metricsContent := container.NewVBox()
 
 	// Periodically update logsContent with logBuffer
@@ -318,7 +319,10 @@ func main() {
 		case "Peers":
 			mainContent.Objects = []fyne.CanvasObject{peersContent}
 		case "Logs":
-			mainContent.Objects = []fyne.CanvasObject{logsContent}
+			logsContainer := container.NewVBox(
+				logsContent,
+			)
+			mainContent.Objects = []fyne.CanvasObject{logsContainer}
 		case "Metrics":
 			mainContent.Objects = []fyne.CanvasObject{metricsContent}
 		}
