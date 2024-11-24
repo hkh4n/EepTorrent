@@ -34,23 +34,15 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	"github.com/go-echarts/go-echarts/v2/charts"
-	"github.com/go-echarts/go-echarts/v2/components"
-	"github.com/go-echarts/go-echarts/v2/opts"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/go-i2p/sam3"
 	"github.com/sirupsen/logrus"
-	"github.com/srwiley/oksvg"
-	"github.com/srwiley/rasterx"
-	"image"
-	"image/color"
-	"image/png"
+	"github.com/wcharczuk/go-chart"
 	"io"
 	"math/rand"
 	"net"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -76,11 +68,11 @@ type ChartData struct {
 	mu            sync.Mutex
 }
 
-// NewChartData initializes a new ChartData instance.
+// NewChartData initializes a new ChartData instance with initial data points.
 func NewChartData(maxPoints int) *ChartData {
 	return &ChartData{
-		DownloadSpeed: make([]float64, 0, maxPoints),
-		UploadSpeed:   make([]float64, 0, maxPoints),
+		DownloadSpeed: []float64{10, 20, 30}, // Initial non-zero download speeds
+		UploadSpeed:   []float64{5, 15, 25},  // Initial non-zero upload speeds
 		MaxPoints:     maxPoints,
 	}
 }
@@ -98,180 +90,96 @@ func (cd *ChartData) AddPoint(download, upload float64) {
 	cd.UploadSpeed = append(cd.UploadSpeed, upload)
 }
 
-// GenerateChartSVG creates an SVG chart from the current data.
-func (cd *ChartData) GenerateChartSVG() (string, error) {
+// GenerateChartPNG creates a PNG chart from the current data.
+func (cd *ChartData) GenerateChartPNG() ([]byte, error) {
 	cd.mu.Lock()
 	defer cd.mu.Unlock()
 
-	// Create a new line chart
-	line := charts.NewLine()
-	line.SetGlobalOptions(
-		charts.WithTitleOpts(opts.Title{
-			Title:    "Download & Upload Speed",
-			Subtitle: "EepTorrent Metrics",
-			Left:     "center",
-		}),
-		charts.WithXAxisOpts(opts.XAxis{
-			Name: "Time (s)",
-			AxisLabel: &opts.AxisLabel{
-				Show: opts.Bool(true),
-			},
-		}),
-		charts.WithYAxisOpts(opts.YAxis{
-			Name: "Speed (KB/s)",
-			AxisLabel: &opts.AxisLabel{
-				Show: opts.Bool(true),
-			},
-		}),
-		charts.WithTooltipOpts(opts.Tooltip{
-			Trigger:   "axis",
-			Formatter: "{b}: {c} KB/s",
-		}),
-		charts.WithLegendOpts(opts.Legend{
-			Left:         "left",
-			Top:          "top",
-			SelectedMode: "multiple",
-		}),
-	)
-
-	// Prepare data points
-	downloadData := make([]opts.LineData, len(cd.DownloadSpeed))
-	uploadData := make([]opts.LineData, len(cd.UploadSpeed))
-	for i := 0; i < len(cd.DownloadSpeed); i++ {
-		downloadData[i] = opts.LineData{Value: cd.DownloadSpeed[i]}
-		uploadData[i] = opts.LineData{Value: cd.UploadSpeed[i]}
+	// Prepare data
+	xValues := generateXValues(len(cd.DownloadSpeed))
+	downloadSeries := chart.ContinuousSeries{
+		Name:    "Download Speed",
+		XValues: xValues,
+		YValues: cd.DownloadSpeed,
+	}
+	uploadSeries := chart.ContinuousSeries{
+		Name:    "Upload Speed",
+		XValues: xValues,
+		YValues: cd.UploadSpeed,
 	}
 
-	// Add series to the chart
-	line.SetXAxis(generateXValues(len(cd.DownloadSpeed))).
-		AddSeries("Download Speed", downloadData).
-		AddSeries("Upload Speed", uploadData).
-		SetSeriesOptions(
-			charts.WithLineChartOpts(opts.LineChart{
-				Smooth: opts.Bool(true),
-			}),
-			charts.WithLabelOpts(opts.Label{
-				Show:      opts.Bool(true),
-				Position:  "top",
-				Formatter: "{c} KB/s",
-			}),
-		)
+	// Create the chart
+	graph := chart.Chart{
+		Series: []chart.Series{
+			downloadSeries,
+			uploadSeries,
+		},
+		XAxis: chart.XAxis{
+			Name:      "Time (s)",
+			NameStyle: chart.StyleShow(),
+			Style:     chart.StyleShow(),
+		},
+		YAxis: chart.YAxis{
+			Name:      "Speed (KB/s)",
+			NameStyle: chart.StyleShow(),
+			Style:     chart.StyleShow(),
+		},
+		/*
+			Title: chart.Title{
+				Text: "Download & Upload Speed",
+			},
 
-	// Render the chart to an SVG string
+		*/
+	}
+
+	// Render the chart to a buffer
 	var buf bytes.Buffer
-	page := components.NewPage()
-	page.AddCharts(line)
-	err := page.Render(&buf)
+	err := graph.Render(chart.PNG, &buf)
 	if err != nil {
-		logrus.WithError(err).Error("Failed to render chart")
-		return "", err
-	}
-
-	// Extract the SVG content from the rendered HTML
-	svgStart := bytes.Index(buf.Bytes(), []byte("<svg"))
-	svgEnd := bytes.LastIndex(buf.Bytes(), []byte("</svg>")) // Use LastIndex to ensure correct end
-	if svgStart == -1 || svgEnd == -1 {
-		return "", fmt.Errorf("SVG content not found in rendered chart")
-	}
-
-	svgContent := buf.Bytes()[svgStart : svgEnd+len("</svg>")]
-	return string(svgContent), nil
-}
-
-func SVGToPNG(svg string, width, height int) (image.Image, error) {
-	// Parse the SVG data
-	r := strings.NewReader(svg)
-	icon, err := oksvg.ReadIconStream(r)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse SVG: %v", err)
-	}
-
-	// Set the target dimensions for rendering
-	icon.SetTarget(0, 0, float64(width), float64(height))
-
-	// Create a new RGBA image where the SVG will be rendered
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	// Initialize the rasterizer scanner
-	scanner := rasterx.NewScannerGV(width, height, img, img.Bounds())
-
-	// Initialize the dasher with the scanner
-	dasher := rasterx.NewDasher(width, height, scanner)
-
-	// Set the color for rasterization
-	// You can use a solid color or define a ColorFunc for gradients or patterns
-	scanner.SetColor(color.Black) // Example: Solid black color
-
-	// Optionally, set stroke parameters if you need to stroke paths
-	// Parameters: width, miterLimit, CapFunc, CapFunc, GapFunc, JoinMode, []float64(dashes), dashOffset
-	dasher.SetStroke(
-		10*64,            // Width (fixed.Int26_6)
-		4*64,             // Miter Limit (fixed.Int26_6)
-		rasterx.RoundCap, // Cap function for line ends
-		nil,              // Optional: Cap function for the other end
-		rasterx.RoundGap, // Gap function for joins
-		rasterx.ArcClip,  // Join mode
-		nil,              // Dashes (nil for solid lines)
-		0,                // Dash offset
-	)
-
-	// Draw the SVG onto the dasher
-	icon.Draw(dasher, 1) // The second parameter is opacity (1 = fully opaque)
-
-	return img, nil
-}
-
-// Helper function to convert SVG to PNG bytes
-func SVGToPNGBytes(svg string, width, height int) ([]byte, error) {
-	img, err := SVGToPNG(svg, width, height)
-	if err != nil {
+		log.Printf("Failed to render chart: %v", err)
 		return nil, err
 	}
 
-	var buf bytes.Buffer
-	err = png.Encode(&buf, img)
+	// Optionally, write the PNG to a file for debugging
+	err = os.WriteFile("generated_chart.png", buf.Bytes(), 0644)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode PNG: %v", err)
+		log.Printf("Error writing PNG to file: %v", err)
 	}
 
 	return buf.Bytes(), nil
 }
 
 // Update the metricsContent with the latest chart
-// Update the metricsContent with the latest chart
-func updateMetricsChart(chartData *ChartData, chartImage *canvas.Image, myWindow fyne.Window) {
-	svg, err := chartData.GenerateChartSVG()
+func updateMetricsChart(chartData *ChartData, chartImage *canvas.Image, myApp fyne.App) {
+	pngBytes, err := chartData.GenerateChartPNG()
 	if err != nil {
-		log.Printf("Error generating chart SVG: %v", err)
+		log.Printf("Error generating chart PNG: %v", err)
 		return
 	}
 
-	// Define desired image dimensions
-	width, height := 600, 400
-
-	pngBytes, err := SVGToPNGBytes(svg, width, height)
-	if err != nil {
-		log.Printf("Error converting SVG to PNG: %v", err)
+	if len(pngBytes) == 0 {
+		log.Printf("Generated PNG bytes are empty")
 		return
 	}
 
 	// Create a Fyne resource from the image
 	resource := fyne.NewStaticResource("chart.png", pngBytes)
 
-	// Update the canvas.Image
+	// Queue the UI update on the main thread
+
 	chartImage.Resource = resource
 	chartImage.Refresh()
+
 }
 
 // generateXValues generates X-axis labels based on the number of points.
-func generateXValues(numPoints int) []string {
-	x := make([]string, numPoints)
+func generateXValues(numPoints int) []float64 {
+	x := make([]float64, numPoints)
 	for i := 0; i < numPoints; i++ {
-		x[i] = fmt.Sprintf("%d", i)
+		x[i] = float64(i)
 	}
 	return x
 }
-
 func init() {
 	// Configure logrus
 	log.SetFormatter(&logrus.TextFormatter{
@@ -283,13 +191,11 @@ func init() {
 }
 
 func main() {
-	myApp := app.New()
+	// Initialize the Fyne application with a unique ID to satisfy Preferences API
+	myApp := app.NewWithID("com.i2p.EepTorrent")
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
 	myWindow := myApp.NewWindow("EepTorrent")
-
-	background := canvas.NewImageFromResource(logo.ResourceLogoPng)
-	background.FillMode = canvas.ImageFillContain // Adjust as needed
 
 	showDisclaimer(myApp, myWindow)
 
@@ -524,15 +430,13 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				// For demonstration, randomly add points
-				downloadSpeed := rand.Float64() * 100 // Replace with actual download speed
-				uploadSpeed := rand.Float64() * 50    // Replace with actual upload speed
+				// Replace with actual download and upload speeds
+				downloadSpeed := rand.Float64() * 100
+				uploadSpeed := rand.Float64() * 50
 				chartData.AddPoint(downloadSpeed, uploadSpeed)
 
 				// Update the chart on the main thread
-
-				updateMetricsChart(chartData, chartImage, myWindow)
-
+				updateMetricsChart(chartData, chartImage, myApp)
 			}
 		}
 	}()
@@ -658,6 +562,7 @@ func main() {
 							uploadSpeedKBps := float64(bytesUploaded) / 1024
 
 							// Update GUI elements on the main thread
+
 							progressBar.SetValue(progress)
 							statusLabel.SetText(fmt.Sprintf("Downloading: %.2f%%", dm.Progress()))
 							downloadSpeedLabel.SetText(fmt.Sprintf("Download Speed: %.2f KB/s", downloadSpeedKBps))
@@ -666,7 +571,7 @@ func main() {
 
 							// Update the chart
 							chartData.AddPoint(downloadSpeedKBps, uploadSpeedKBps)
-							updateMetricsChart(chartData, chartImage, myWindow)
+							updateMetricsChart(chartData, chartImage, myApp)
 
 						case <-ctx.Done():
 							progressTicker.Stop()
@@ -731,11 +636,14 @@ func main() {
 				cancel()
 
 				if dm.IsFinished() {
+
 					dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", info.Name), myWindow)
 					statusLabel.SetText("Seeding...")
+
 				} else {
 					dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
 					statusLabel.SetText("Download Incomplete")
+
 				}
 			}()
 		}, myWindow)
