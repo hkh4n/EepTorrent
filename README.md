@@ -3,7 +3,20 @@
 ## ⚠️ Disclaimer ⚠️ (PLEASE READ BEFORE USING)
 This is a work in progress and is considered **pre-alpha** software, meaning it doesn't even have the core functions yet. Use at your own risk and be sure to update frequently.
 
-### As of 11/19/2024, this is in crude working condition. It's advised NOT to use at this time. But you can out of curiosity.
+### As of 11/24/2024, this is in crude working condition. It's advised NOT to use at this time. But you can out of curiosity.
+
+## Building
+
+```shell
+git clone https://github.com/hkh4n/EepTorrent.git
+cd EepTorrent
+go mod tidy
+make build
+```
+
+## Testing
+
+Set /tmp/test.torrent to a valid torrent file to test out the trackers.
 
 ## Core libraries used
 
@@ -12,7 +25,6 @@ go-i2p-bt -> https://github.com/go-i2p/go-i2p-bt (fork of https://github.com/xgf
 sam3 -> https://github.com/go-i2p/sam3
 
 i2pkeys -> https://github.com/go-i2p/i2pkeys
-
 
 ## Trademark and Logo Usage
 
