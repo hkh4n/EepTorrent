@@ -53,7 +53,7 @@ import (
 
 var (
 	log          = logrus.StandardLogger()
-	maxRetries   = 20
+	maxRetries   = 100
 	initialDelay = 2 * time.Second
 	logFile      *os.File
 	logFileMux   sync.Mutex
