@@ -33,7 +33,7 @@ func TestTrackers(t *testing.T) {
 	}
 
 	// Initialize SAM connection
-	err = i2p.InitSAM()
+	err = i2p.InitSAM(i2p.DefaultSAMConfig())
 	if err != nil {
 		t.Fatalf("Failed to initialize SAM: %v", err)
 	}
