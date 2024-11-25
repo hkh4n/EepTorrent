@@ -43,7 +43,7 @@ build-linux-amd64:
 	mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 -v $(MAIN)
 
-build-android: build-android-arm64 build-android-arm
+build-android: build-android-arm64 build-android-arm build-android-amd64
 
 build-android-arm64:
 	mkdir -p $(BUILD_DIR)
