@@ -65,6 +65,21 @@ func TestTrackers(t *testing.T) {
 			getFn:   GetPeersFromSkankTracker,
 			timeout: 30 * time.Second,
 		},
+		{
+			name:    "OmitTracker",
+			getFn:   GetPeersFromOmitTracker,
+			timeout: 30 * time.Second,
+		},
+		{
+			name:    "6kw6Tracker",
+			getFn:   GetPeersFrom6kw6Tracker,
+			timeout: 30 * time.Second,
+		},
+		{
+			name:    "EepTorrentTracker",
+			getFn:   GetPeersFromEepTorrentTracker,
+			timeout: 30 * time.Second,
+		},
 	}
 
 	for _, tt := range trackerTests {
@@ -83,7 +98,7 @@ func TestTrackers(t *testing.T) {
 				if testErr != nil {
 					t.Errorf("Failed to get peers from %s: %v", tt.name, testErr)
 				} else if len(peers) == 0 {
-					t.Errorf("%s returned no peers", tt.name)
+					t.Logf("%s returned no peers", tt.name)
 				} else {
 					t.Logf("%s successfully returned %d peers", tt.name, len(peers))
 

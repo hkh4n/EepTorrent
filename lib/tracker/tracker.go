@@ -53,7 +53,7 @@ func getPeersFromTracker(tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, err
 	stream := i2p.GlobalStreamSession
 	addr, err := sam.Lookup(tc.TrackerAddr)
 	if err != nil {
-		log.WithError(err).Error("Failed to lookup postman tracker address")
+		log.WithError(err).Errorf("Failed to lookup %s tracker address", tc.Name)
 		return nil, err
 	}
 	info, err := mi.Info()
@@ -156,22 +156,12 @@ func getPeersFromTracker(tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, err
 	return peerHashes, nil
 }
 
-func GetPeersFromSkankTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
-	log.Info("Getting peers from Skank tracker")
+func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Info("Getting peers from EepTorrent tracker")
 	config := TrackerConfig{
-		Name:        "Skank",
-		TrackerAddr: "opentracker.skank.i2p",
+		Name:        "EepTorrent",
+		TrackerAddr: "bjnkpy2rpwwlyjgmxeolt2cnp7h4oe437mtd54hb3pve3gmjqp5a.b32.i2p",
 		Path:        "a",
-	}
-	return getPeersFromTracker(config, mi)
-}
-
-func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo) ([][]byte, error) {
-	log.Info("Getting peers from Dg2 tracker")
-	config := TrackerConfig{
-		Name:        "Dg2",
-		TrackerAddr: "opentracker.dg2.i2p",
-		Path:        "announce.php",
 	}
 	return getPeersFromTracker(config, mi)
 }
@@ -192,6 +182,46 @@ func GetPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 		Name:        "Simp",
 		TrackerAddr: "wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p",
 		Path:        "a",
+	}
+	return getPeersFromTracker(config, mi)
+}
+
+func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Info("Getting peers from Dg2 tracker")
+	config := TrackerConfig{
+		Name:        "Dg2",
+		TrackerAddr: "opentracker.dg2.i2p",
+		Path:        "announce.php",
+	}
+	return getPeersFromTracker(config, mi)
+}
+
+func GetPeersFromSkankTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Info("Getting peers from Skank tracker")
+	config := TrackerConfig{
+		Name:        "Skank",
+		TrackerAddr: "opentracker.skank.i2p",
+		Path:        "a",
+	}
+	return getPeersFromTracker(config, mi)
+}
+
+func GetPeersFromOmitTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Info("Getting peers from Omit tracker")
+	config := TrackerConfig{
+		Name:        "Omit",
+		TrackerAddr: "omitracker.i2p",
+		Path:        "announce.php",
+	}
+	return getPeersFromTracker(config, mi)
+}
+
+func GetPeersFrom6kw6Tracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Info("Getting peers from 6kw6 tracker")
+	config := TrackerConfig{
+		Name:        "6kw6",
+		TrackerAddr: "6kw6voy3v5jzmkbg4i3rlqjysre4msgarpkpme6mt5u2jw33nffa.b32.i2p",
+		Path:        "announce",
 	}
 	return getPeersFromTracker(config, mi)
 }
