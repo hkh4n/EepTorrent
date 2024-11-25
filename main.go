@@ -37,10 +37,11 @@ import (
 	"fyne.io/fyne/v2/widget"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
-	"github.com/wcharczuk/go-chart"
 	"io"
+	"math/rand"
 	"net"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -59,126 +60,200 @@ var (
 	logBuffer    bytes.Buffer
 )
 
-// ChartData holds the data points for the chart.
-type ChartData struct {
-	DownloadSpeed []float64
-	UploadSpeed   []float64
-	MaxPoints     int
-	mu            sync.Mutex
+// PeerManager handles peer choking/unchoking and optimistic unchoking
+type PeerManager struct {
+	mu              sync.Mutex
+	peers           map[*pp.PeerConn]*peer.PeerState
+	downloadManager *download.DownloadManager
+	lastUnchoking   time.Time
+	// Track peer performance
+	peerStats map[*pp.PeerConn]*PeerStats
 }
 
-// NewChartData initializes a new ChartData instance with initial data points.
-func NewChartData(maxPoints int) *ChartData {
-	return &ChartData{
-		DownloadSpeed: []float64{10, 20, 30}, // Initial non-zero download speeds
-		UploadSpeed:   []float64{5, 15, 25},  // Initial non-zero upload speeds
-		MaxPoints:     maxPoints,
+type PeerStats struct {
+	bytesDownloaded int64
+	bytesUploaded   int64
+	lastDownload    time.Time
+	lastUpload      time.Time
+	downloadRate    float64
+	uploadRate      float64
+}
+
+func NewPeerManager(dm *download.DownloadManager) *PeerManager {
+	pm := &PeerManager{
+		peers:           make(map[*pp.PeerConn]*peer.PeerState),
+		downloadManager: dm,
+		peerStats:       make(map[*pp.PeerConn]*PeerStats),
+	}
+
+	// Start periodic unchoking algorithm
+	go pm.runChokingAlgorithm()
+	return pm
+}
+
+func (pm *PeerManager) runChokingAlgorithm() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		pm.mu.Lock()
+		now := time.Now()
+
+		// Sort peers by download rate
+		var peerList []*pp.PeerConn
+		for peer := range pm.peers {
+			peerList = append(peerList, peer)
+		}
+
+		sort.Slice(peerList, func(i, j int) bool {
+			statsI := pm.peerStats[peerList[i]]
+			statsJ := pm.peerStats[peerList[j]]
+			return statsI.downloadRate > statsJ.downloadRate
+		})
+
+		// Unchoke top 4 downloading peers
+		for i, peer := range peerList {
+			if i < 4 {
+				if peer.Choked {
+					peer.SendUnchoke()
+				}
+			} else {
+				if !peer.Choked { // Choked vs PeerChoked
+					peer.SendChoke()
+				}
+			}
+		}
+
+		// Optimistic unchoking: randomly unchoke one additional peer every 30 seconds
+		if now.Sub(pm.lastUnchoking) > 30*time.Second {
+			if len(peerList) > 4 {
+				randomIndex := 4 + rand.Intn(len(peerList)-4)
+				peer := peerList[randomIndex]
+				if peer.Choked {
+					peer.SendUnchoke()
+				}
+			}
+			pm.lastUnchoking = now
+		}
+
+		pm.mu.Unlock()
 	}
 }
 
-// AddPoint adds new data points to the chart.
-func (cd *ChartData) AddPoint(download, upload float64) {
-	cd.mu.Lock()
-	defer cd.mu.Unlock()
+func (pm *PeerManager) UpdatePeerStats(pc *pp.PeerConn, bytesDownloaded, bytesUploaded int64) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
-	if len(cd.DownloadSpeed) >= cd.MaxPoints {
-		cd.DownloadSpeed = cd.DownloadSpeed[1:]
-		cd.UploadSpeed = cd.UploadSpeed[1:]
+	stats, exists := pm.peerStats[pc]
+	if !exists {
+		stats = &PeerStats{}
+		pm.peerStats[pc] = stats
 	}
-	cd.DownloadSpeed = append(cd.DownloadSpeed, download)
-	cd.UploadSpeed = append(cd.UploadSpeed, upload)
+
+	now := time.Now()
+
+	// Update download stats
+	if bytesDownloaded > 0 {
+		duration := now.Sub(stats.lastDownload).Seconds()
+		if duration > 0 {
+			stats.downloadRate = float64(bytesDownloaded) / duration
+		}
+		stats.bytesDownloaded += bytesDownloaded
+		stats.lastDownload = now
+	}
+
+	// Update upload stats
+	if bytesUploaded > 0 {
+		duration := now.Sub(stats.lastUpload).Seconds()
+		if duration > 0 {
+			stats.uploadRate = float64(bytesUploaded) / duration
+		}
+		stats.bytesUploaded += bytesUploaded
+		stats.lastUpload = now
+	}
 }
 
-// GenerateChartPNG creates a PNG chart from the current data.
-func (cd *ChartData) GenerateChartPNG() ([]byte, error) {
-	cd.mu.Lock()
-	defer cd.mu.Unlock()
-
-	// Prepare data
-	xValues := generateXValues(len(cd.DownloadSpeed))
-	downloadSeries := chart.ContinuousSeries{
-		Name:    "Download Speed",
-		XValues: xValues,
-		YValues: cd.DownloadSpeed,
+// Call this when receiving data from a peer
+func (pm *PeerManager) OnDownload(pc *pp.PeerConn, bytes int64) {
+	// If we're downloading from a peer, express interest and try to reciprocate
+	if !pc.Interested {
+		pc.SendInterested()
 	}
-	uploadSeries := chart.ContinuousSeries{
-		Name:    "Upload Speed",
-		XValues: xValues,
-		YValues: cd.UploadSpeed,
-	}
-
-	// Create the chart
-	graph := chart.Chart{
-		Series: []chart.Series{
-			downloadSeries,
-			uploadSeries,
-		},
-		XAxis: chart.XAxis{
-			Name:      "Time (s)",
-			NameStyle: chart.StyleShow(),
-			Style:     chart.StyleShow(),
-		},
-		YAxis: chart.YAxis{
-			Name:      "Speed (KB/s)",
-			NameStyle: chart.StyleShow(),
-			Style:     chart.StyleShow(),
-		},
-		/*
-			Title: chart.Title{
-				Text: "Download & Upload Speed",
-			},
-
-		*/
-	}
-
-	// Render the chart to a buffer
-	var buf bytes.Buffer
-	err := graph.Render(chart.PNG, &buf)
-	if err != nil {
-		log.Printf("Failed to render chart: %v", err)
-		return nil, err
-	}
-
-	// Optionally, write the PNG to a file for debugging
-	err = os.WriteFile("generated_chart.png", buf.Bytes(), 0644)
-	if err != nil {
-		log.Printf("Error writing PNG to file: %v", err)
-	}
-
-	return buf.Bytes(), nil
+	pm.UpdatePeerStats(pc, bytes, 0)
 }
 
-// Update the metricsContent with the latest chart
-func updateMetricsChart(chartData *ChartData, chartImage *canvas.Image, myApp fyne.App) {
-	pngBytes, err := chartData.GenerateChartPNG()
-	if err != nil {
-		log.Printf("Error generating chart PNG: %v", err)
+// Call this when uploading data to a peer
+func (pm *PeerManager) OnUpload(pc *pp.PeerConn, bytes int64) {
+	pm.UpdatePeerStats(pc, 0, bytes)
+}
+
+func (pm *PeerManager) OnPeerInterested(pc *pp.PeerConn) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pc.PeerInterested = true
+
+	if pm.downloadManager.IsFinished() {
+		if pc.PeerChoked {
+			pc.SendUnchoke()
+			log.WithField("peer", pc.RemoteAddr().String()).Info("Unchoked interested peer while seeding")
+		}
+	}
+}
+
+func (pm *PeerManager) OnPeerNotInterested(pc *pp.PeerConn) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pc.PeerInterested = false
+
+	if !pc.PeerChoked {
+		pc.SendChoke()
+		log.WithField("peer", pc.RemoteAddr().String()).Info("Choked not interested peer")
+	}
+}
+
+func (pm *PeerManager) HandleSeeding() {
+	// Modify the choking algorithm for seeding mode
+	if !pm.downloadManager.IsFinished() {
 		return
 	}
 
-	if len(pngBytes) == 0 {
-		log.Printf("Generated PNG bytes are empty")
-		return
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	// Sort peers by upload rate
+	var peerList []*pp.PeerConn
+	for peer := range pm.peers {
+		if peer.PeerInterested {
+			peerList = append(peerList, peer)
+		}
 	}
 
-	// Create a Fyne resource from the image
-	resource := fyne.NewStaticResource("chart.png", pngBytes)
+	sort.Slice(peerList, func(i, j int) bool {
+		statsI := pm.peerStats[peerList[i]]
+		statsJ := pm.peerStats[peerList[j]]
+		return statsI.uploadRate > statsJ.uploadRate
+	})
 
-	// Queue the UI update on the main thread
+	// When seeding, we can be more generous with unchoking
+	maxUnchoked := 8 // Allow more concurrent uploads when seeding
 
-	chartImage.Resource = resource
-	chartImage.Refresh()
-
-}
-
-// generateXValues generates X-axis labels based on the number of points.
-func generateXValues(numPoints int) []float64 {
-	x := make([]float64, numPoints)
-	for i := 0; i < numPoints; i++ {
-		x[i] = float64(i)
+	// Unchoke the top uploaders
+	for i, peer := range peerList {
+		if i < maxUnchoked {
+			if peer.PeerChoked {
+				peer.SendUnchoke()
+				log.WithField("peer", peer.RemoteAddr().String()).Info("Unchoked high-performing peer while seeding")
+			}
+		} else {
+			if !peer.PeerChoked {
+				peer.SendChoke()
+			}
+		}
 	}
-	return x
 }
+
 func init() {
 	// Configure logrus
 	log.SetFormatter(&logrus.TextFormatter{
@@ -198,6 +273,7 @@ func main() {
 	gui.ShowDisclaimer(myApp, myWindow)
 
 	var dm *download.DownloadManager
+	var pm *PeerManager
 	var wg sync.WaitGroup
 	var downloadInProgress bool
 	var downloadCancel context.CancelFunc
@@ -291,7 +367,7 @@ func main() {
 	}()
 
 	// Initialize ChartData
-	chartData := NewChartData(30)
+	chartData := gui.NewChartData(30)
 
 	// Initialize Chart Image
 	chartImage := canvas.NewImageFromImage(nil)
@@ -568,6 +644,7 @@ func main() {
 				writer := metainfo.NewWriter(outputPath, info, mode)
 				//dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
+				pm = NewPeerManager(dm)
 				progressTicker := time.NewTicker(1 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
@@ -575,7 +652,7 @@ func main() {
 				// Start the listener for incoming connections (seeding)
 
 				go func() {
-					err := startPeerListener(dm, &mi)
+					err := startPeerListener(dm, &mi, pm)
 					if err != nil {
 						log.WithError(err).Error("Failed to start peer listener")
 					}
@@ -611,7 +688,7 @@ func main() {
 
 							// Update the chart with real speeds
 							chartData.AddPoint(downloadSpeedKBps, uploadSpeedKBps)
-							updateMetricsChart(chartData, chartImage, myApp)
+							gui.UpdateMetricsChart(chartData, chartImage, myApp)
 
 						case <-ctx.Done():
 							progressTicker.Stop()
@@ -793,18 +870,30 @@ func removeDuplicatePeers(peers [][]byte) [][]byte {
 	return uniquePeers
 }
 
-func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) error {
+func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *PeerManager) error {
 	listenerSession := i2p.GlobalStreamSession
 
-	// Start listening on the same destination as used for downloading
 	listener, err := listenerSession.Listen()
 	if err != nil {
 		return fmt.Errorf("Failed to start listening: %v", err)
 	}
+	defer listener.Close()
 
 	log.Info("Started seeding listener on address: ", listenerSession.Addr().Base32())
 
-	// Start accepting connections in a loop
+	// Start a goroutine to periodically run the seeding algorithm
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if dm.IsFinished() {
+				pm.HandleSeeding()
+			}
+		}
+	}()
+
+	// Accept incoming connections
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -812,7 +901,6 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) erro
 			continue
 		}
 
-		// Handle each incoming connection in a goroutine
 		go func(conn net.Conn) {
 			defer conn.Close()
 
@@ -822,7 +910,7 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) erro
 			// Generate peer ID for this connection
 			peerId := util.GeneratePeerIdMeta()
 
-			// Perform handshake with the incoming peer
+			// Perform handshake
 			err := peer.PerformHandshake(conn, mi.InfoHash().Bytes(), string(peerId[:]))
 			if err != nil {
 				log.WithError(err).Error("Failed handshake with seeding peer")
@@ -837,15 +925,8 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) erro
 			dm.AddPeer(pc)
 			defer dm.RemovePeer(pc)
 
-			// Send our bitfield to the peer
-			err = pc.SendBitfield(dm.Bitfield)
-			if err != nil {
-				log.WithError(err).Error("Failed to send bitfield to seeding peer")
-				return
-			}
-
-			// Handle the peer connection - but in seeding mode
-			err = handleSeedingPeer(pc, dm)
+			// Handle the peer connection in seeding mode
+			err = handleSeedingPeer(pc, dm, pm)
 			if err != nil {
 				log.WithError(err).Error("Error handling seeding peer")
 			}
@@ -854,28 +935,63 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) erro
 }
 
 // New function to handle seeding peers
-func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager) error {
-	// Don't choke by default when seeding
+func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *PeerManager) error {
+	log := log.WithField("peer", pc.RemoteAddr().String())
+	log.Info("Handling new seeding connection")
+
+	// Add peer to manager
+	pm.mu.Lock()
+	if pm.peers == nil {
+		pm.peers = make(map[*pp.PeerConn]*peer.PeerState)
+	}
+	pm.peers[pc] = peer.NewPeerState()
+	pm.mu.Unlock()
+
+	defer func() {
+		pm.mu.Lock()
+		delete(pm.peers, pc)
+		pm.mu.Unlock()
+	}()
+
+	// Initially unchoke peer to allow requests
 	err := pc.SendUnchoke()
 	if err != nil {
 		return fmt.Errorf("failed to send unchoke: %v", err)
 	}
 
+	// Send our bitfield so they know what pieces we have
+	err = pc.SendBitfield(dm.Bitfield)
+	if err != nil {
+		return fmt.Errorf("failed to send bitfield: %v", err)
+	}
+
+	// Main message handling loop
 	for {
 		msg, err := pc.ReadMsg()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read message: %v", err)
 		}
 
 		switch msg.Type {
 		case pp.MTypeRequest:
-			// Handle piece requests from peers
+			// Validate request
+			if msg.Begin+msg.Length > uint32(dm.Writer.Info().PieceLength) {
+				log.WithFields(logrus.Fields{
+					"index":  msg.Index,
+					"begin":  msg.Begin,
+					"length": msg.Length,
+				}).Error("Invalid piece request")
+				continue
+			}
+
+			// Get the requested block
 			blockData, err := dm.GetBlock(msg.Index, msg.Begin, msg.Length)
 			if err != nil {
 				log.WithError(err).Error("Failed to get requested block")
 				continue
 			}
 
+			// Send the piece
 			err = pc.SendPiece(msg.Index, msg.Begin, blockData)
 			if err != nil {
 				log.WithError(err).Error("Failed to send piece")
@@ -883,18 +999,37 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager) error {
 			}
 
 			// Update upload stats
-			atomic.AddInt64(&dm.Uploaded, int64(len(blockData)))
+			uploadSize := int64(len(blockData))
+			atomic.AddInt64(&dm.Uploaded, uploadSize)
+			pm.OnUpload(pc, uploadSize)
+
+			log.WithFields(logrus.Fields{
+				"index": msg.Index,
+				"begin": msg.Begin,
+				"size":  len(blockData),
+			}).Debug("Successfully sent piece")
 
 		case pp.MTypeInterested:
-			// Immediately unchoke interested peers when seeding
-			err := pc.SendUnchoke()
-			if err != nil {
-				//
-			}
+			pm.OnPeerInterested(pc)
+			log.Debug("Peer became interested")
 
 		case pp.MTypeNotInterested:
-			// Can optionally choke uninterested peers to save resources
-			pc.SendChoke()
+			pm.OnPeerNotInterested(pc)
+			log.Debug("Peer became not interested")
+
+		case pp.MTypeHave:
+			// Update peer's bitfield
+			if int(msg.Index) < len(pc.BitField) {
+				pc.BitField.Set(msg.Index)
+			}
+
+		case pp.MTypeBitField:
+			pc.BitField = msg.BitField
+			log.WithField("pieces", pc.BitField.String()).Debug("Received peer bitfield")
+
+		case pp.MTypeCancel:
+			// Simply ignore cancel requests while seeding
+			log.Debug("Ignored cancel request")
 		}
 	}
 }
