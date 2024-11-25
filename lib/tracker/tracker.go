@@ -210,7 +210,7 @@ func GetPeersFromOmitTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	log.Info("Getting peers from Omit tracker")
 	config := TrackerConfig{
 		Name:        "Omit",
-		TrackerAddr: "omitracker.i2p",
+		TrackerAddr: "a5ruhsktpdhfk5w46i6yf6oqovgdlyzty7ku6t5yrrpf4qedznjq.b32.i2p",
 		Path:        "announce.php",
 	}
 	return getPeersFromTracker(config, mi)
