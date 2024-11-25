@@ -50,7 +50,7 @@ build-android-arm64:
 	fyne package -os android/arm64 \
 		-appID $(ANDROID_PACKAGE) \
 		-name $(BINARY_NAME) \
-		-icon Icon.png \
+		-icon images/Logo.png \
 		-appVersion $(VERSION) \
 		-metadata MinSDK=21 \
 		--exe $(BUILD_DIR)/$(BINARY_NAME)-arm64.apk
@@ -61,7 +61,7 @@ build-android-arm:
 	fyne package -os android/arm \
 		-appID $(ANDROID_PACKAGE) \
 		-name $(BINARY_NAME) \
-		-icon Icon.png \
+		-icon images/Logo.png \
 		-appVersion $(VERSION) \
 		-metadata MinSDK=21 \
 		--exe $(BUILD_DIR)/$(BINARY_NAME)-arm.apk
@@ -76,7 +76,7 @@ build-android-amd64:
 	fyne package -os android/amd64 \
 		-appID $(ANDROID_PACKAGE) \
 		-name $(BINARY_NAME) \
-		-icon Icon.png \
+		-icon images/Logo.png \
 		-appVersion $(VERSION) \
 		-metadata MinSDK=21 \
 		--exe ./$(BUILD_DIR)/$(BINARY_NAME)-x86_64.apk
