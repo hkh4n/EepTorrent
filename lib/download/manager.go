@@ -129,7 +129,6 @@ func (dm *DownloadManager) IsFinished() bool {
 
 // OnBlock handles the reception of a block from a peer.
 func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
-
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
 
@@ -302,7 +301,6 @@ func (dm *DownloadManager) LogProgress() {
 
 // Progress calculates the current download progress percentage
 func (dm *DownloadManager) Progress() float64 {
-	log.Debug("Calculating download progress")
 	totalPieces := dm.Writer.Info().CountPieces()
 	completedPieces := 0
 	for i := 0; i < totalPieces; i++ {
@@ -311,7 +309,11 @@ func (dm *DownloadManager) Progress() float64 {
 		}
 	}
 	progress := (float64(completedPieces) / float64(totalPieces)) * 100
-	log.WithField("progress_percentage", progress).Debug("Calculated progress")
+	log.WithFields(logrus.Fields{
+		"completed_pieces": completedPieces,
+		"total_pieces":     totalPieces,
+		"progress":         fmt.Sprintf("%.2f%%", progress),
+	}).Debug("Progress calculated")
 	return progress
 }
 
@@ -581,6 +583,13 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 	}
 
 	pieceData := make([]byte, actualLength)
+
+	log.WithFields(logrus.Fields{
+		"piece_index":  index,
+		"piece_size":   actualLength,
+		"download_dir": dm.DownloadDir,
+		"multi_file":   len(info.Files) > 0,
+	}).Debug("Reading piece data")
 
 	if len(info.Files) == 0 {
 		// Single-file torrent
