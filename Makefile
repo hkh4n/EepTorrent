@@ -52,7 +52,7 @@ build-android-arm64:
 		-name $(BINARY_NAME) \
 		-icon Icon.png \
 		-appVersion $(VERSION) \
-		-androidMinSDK $(MIN_SDK_VERSION)
+		-metadata MinSDK=21
 
 build-android-arm:
 	mkdir -p $(BUILD_DIR)
@@ -61,7 +61,7 @@ build-android-arm:
 		-name $(BINARY_NAME) \
 		-icon Icon.png \
 		-appVersion $(VERSION) \
-		-androidMinSDK $(MIN_SDK_VERSION)
+		-metadata MinSDK=21
 
 # Check android build environment
 check-android:
