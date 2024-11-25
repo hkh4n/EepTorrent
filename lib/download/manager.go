@@ -27,6 +27,7 @@ import (
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -56,6 +57,7 @@ type DownloadManager struct {
 	RequestedBlocks map[uint32]map[uint32]bool // piece index -> offset -> requested
 	Peers           []*pp.PeerConn
 	DownloadDir     string
+	TotalPieces     int
 }
 
 // BlockInfo represents a specific block within a piece.
@@ -65,7 +67,7 @@ type BlockInfo struct {
 	Length     uint32
 }
 
-func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength int64, totalPieces int) *DownloadManager {
+func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength int64, totalPieces int, downloadDir string) *DownloadManager {
 	log.WithFields(logrus.Fields{
 		"total_length": totalLength,
 		"piece_length": pieceLength,
@@ -94,6 +96,7 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		Writer:          writer,
 		Pieces:          pieces,
 		Bitfield:        pp.NewBitField(totalPieces),
+		TotalPieces:     totalPieces, // <-- Initialize the field
 		Downloaded:      0,
 		Uploaded:        0,
 		Left:            totalLength,
@@ -101,13 +104,30 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		CurrentOffset:   0,
 		RequestedBlocks: make(map[uint32]map[uint32]bool), // Initialize RequestedBlocks
 		Peers:           make([]*pp.PeerConn, 0),          // Initialize Peers
+		DownloadDir:     downloadDir,
 	}
+}
+func (dm *DownloadManager) IsPieceComplete(pieceIndex uint32) bool {
+	if int(pieceIndex) >= len(dm.Pieces) {
+		return false
+	}
+
+	piece := dm.Pieces[pieceIndex]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+
+	for _, blockReceived := range piece.Blocks {
+		if !blockReceived {
+			return false
+		}
+	}
+	return true
 }
 
 // IsFinished checks if the download is complete
 func (dm *DownloadManager) IsFinished() bool {
 	log.Debug("Checking if download is finished")
-	totalPieces := dm.Writer.Info().CountPieces()
+	totalPieces := dm.TotalPieces
 	completedPieces := 0
 
 	for i := 0; i < totalPieces; i++ {
@@ -131,6 +151,15 @@ func (dm *DownloadManager) IsFinished() bool {
 func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
+
+	// Early check: If the piece is already completed, ignore the block.
+	if dm.Bitfield.IsSet(index) {
+		log.WithFields(logrus.Fields{
+			"piece_index": index,
+			"offset":      offset,
+		}).Debug("Received block for already completed piece, ignoring")
+		return nil
+	}
 
 	// Validate piece index.
 	if int(index) >= len(dm.Pieces) {
@@ -261,8 +290,7 @@ func (dm *DownloadManager) isPieceComplete(piece *PieceStatus) bool {
 			return false
 		}
 	}
-	piece.Completed = true
-	log.WithField("piece_index", piece.Index).Info("Piece marked as completed")
+	log.WithField("piece_index", piece.Index).Debug("Piece is complete")
 	return true
 }
 
@@ -271,6 +299,13 @@ func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 	defer dm.Mu.Unlock()
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	log.Debug("Checking if we need pieces from this peer")
+
+	peerPieces := len(pc.BitField)
+	totalPieces := len(dm.Bitfield)
+	log.WithFields(logrus.Fields{
+		"peerPieces":  peerPieces,
+		"totalPieces": totalPieces,
+	}).Debug("Piece details")
 
 	for i := 0; i < len(dm.Bitfield); i++ { //dm.Bitfield.Length() -> len(dm.Bitfield)
 		if !dm.Bitfield.IsSet(uint32(i)) && pc.BitField.IsSet(uint32(i)) {
@@ -536,24 +571,43 @@ func (dm *DownloadManager) FinalizeDownload() error {
 // VerifyPiece verifies the integrity of a downloaded piece.
 func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 	log.WithField("piece_index", index).Debug("Verifying piece")
+
+	// Read the downloaded piece data
 	pieceData, err := dm.ReadPiece(index)
 	if err != nil {
 		log.WithError(err).Error("Failed to read piece for verification")
 		return false
 	}
 
-	expectedHash := dm.Writer.Info().Pieces[index]
+	info := dm.Writer.Info()
+	totalPieces := info.CountPieces()
+
+	// Validate the piece index
+	if int(index) >= totalPieces {
+		log.WithFields(logrus.Fields{
+			"piece_index":  index,
+			"total_pieces": totalPieces,
+		}).Error("Invalid piece index for verification")
+		return false
+	}
+
+	// Extract the expected 20-byte SHA1 hash for the piece
+	expectedHash := info.Pieces[index] // This is of type [20]byte
+
+	// Compute the actual SHA1 hash of the downloaded piece
 	actualHash := sha1.Sum(pieceData)
 
+	// Compare the expected and actual hashes
 	if !bytes.Equal(expectedHash[:], actualHash[:]) {
 		log.WithFields(logrus.Fields{
 			"piece_index":   index,
-			"expected_hash": fmt.Sprintf("%x", expectedHash),
-			"actual_hash":   fmt.Sprintf("%x", actualHash),
+			"expected_hash": fmt.Sprintf("%x", expectedHash[:]),
+			"actual_hash":   fmt.Sprintf("%x", actualHash[:]),
 		}).Error("Piece hash mismatch")
 		return false
 	}
 
+	// Mark the piece as completed in the Bitfield
 	dm.Mu.Lock()
 	dm.Bitfield.Set(index)
 	dm.Mu.Unlock()
@@ -600,6 +654,20 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 	if len(info.Files) == 0 {
 		// Single-file torrent
 		filePath := filepath.Join(dm.DownloadDir, info.Name)
+		log.WithField("file_path", filePath).Warn("Attempting to stat file") // Add this line
+		// Check if the path is a directory
+		fi, err := os.Stat(filePath)
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"file_path": filePath,
+				"error":     err,
+			}).Error("Failed to stat file")
+			return nil, fmt.Errorf("failed to stat file %s: %v", filePath, err)
+		}
+		if fi.IsDir() {
+			return nil, fmt.Errorf("expected file at %s but found a directory", filePath)
+		}
+
 		file, err := os.Open(filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
@@ -613,11 +681,13 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 	} else {
 		// Multi-file torrent
 		var currentOffset int64 = 0
+		var bytesRead int64 = 0
 		for _, fileInfo := range info.Files {
 			filePath := filepath.Join(dm.DownloadDir, fileInfo.Path(info))
 			fileSize := fileInfo.Length
 
-			if currentOffset+fileSize < int64(index)*pieceLength {
+			// Check if the piece starts within this file
+			if currentOffset+fileSize <= int64(index)*pieceLength {
 				currentOffset += fileSize
 				continue
 			}
@@ -629,28 +699,37 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 
 			defer file.Close()
 
+			// Calculate the start position within the file
 			pieceStart := int64(index)*pieceLength - currentOffset
-			toRead := actualLength
-			if pieceStart+toRead > fileSize {
-				toRead = fileSize - pieceStart
+			if pieceStart < 0 {
+				pieceStart = 0
 			}
 
-			n, err := file.ReadAt(pieceData[:toRead], pieceStart)
+			// Calculate how much to read from this file
+			remaining := actualLength - bytesRead
+			toRead := pieceStart + remaining
+			if toRead > fileSize {
+				toRead = fileSize
+			}
+
+			readBytes, err := file.ReadAt(pieceData[bytesRead:], pieceStart)
 			if err != nil && err != io.EOF {
 				return nil, fmt.Errorf("failed to read piece %d from file %s: %v", index, filePath, err)
 			}
 
-			if int64(n) != toRead {
-				return nil, fmt.Errorf("incomplete read for piece %d from file %s: expected %d bytes, got %d bytes", index, filePath, toRead, n)
-			}
-
+			bytesRead += int64(readBytes)
 			currentOffset += fileSize
 
-			if toRead >= actualLength {
+			if bytesRead >= actualLength {
 				break
 			}
 		}
+
+		if bytesRead < actualLength {
+			return nil, fmt.Errorf("incomplete read for piece %d", index)
+		}
 	}
+
 	log.WithField("piece_index", index).Debug("Successfully read piece from disk")
 	return pieceData, nil
 }
@@ -690,6 +769,13 @@ func (dm *DownloadManager) GetBlock(pieceIndex, offset, length uint32) ([]byte, 
 
 	if int(pieceIndex) == totalPieces-1 {
 		// Last piece may have a different length
+		/* // Copy over?
+		info := dm.Writer.Info()
+		if int64(offset)+int64(length) > info.PieceLength {
+		    length = int(info.PieceLength - int64(offset))
+		}
+
+		*/
 		remaining := info.TotalLength() - int64(pieceIndex)*pieceLength
 		if int64(offset)+int64(length) > remaining {
 			log.Error("Requested block exceeds piece boundaries")
@@ -771,4 +857,36 @@ func (dm *DownloadManager) GetBlock(pieceIndex, offset, length uint32) ([]byte, 
 
 	log.Debug("Successfully retrieved block data")
 	return blockData, nil
+}
+
+func (dm *DownloadManager) BroadcastHave(pieceIndex uint32) {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+
+	for _, peerConn := range dm.Peers {
+		go func(pc *pp.PeerConn) {
+			err := pc.SendHave(pieceIndex)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"peer":        pc.RemoteAddr().String(),
+					"piece_index": pieceIndex,
+				}).WithError(err).Error("Failed to send 'Have' message to peer")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"peer":        pc.RemoteAddr().String(),
+					"piece_index": pieceIndex,
+				}).Info("Sent 'Have' message to peer")
+			}
+		}(peerConn)
+	}
+}
+
+func (dm *DownloadManager) CalculateNumberOfBlocks(pieceIndex int) int {
+	info := dm.Writer.Info()
+	if pieceIndex < dm.TotalPieces-1 {
+		return int(info.PieceLength / downloader.BlockSize)
+	}
+	// Handle the last piece which might be smaller
+	remaining := info.TotalLength() - info.PieceLength*(int64(dm.TotalPieces-1))
+	return int(math.Ceil(float64(remaining) / float64(downloader.BlockSize)))
 }

@@ -520,7 +520,11 @@ func main() {
 					downloadInProgress = false
 					startButton.Enable()
 					stopButton.Disable()
-					statusLabel.SetText("Download completed")
+					if dm.IsFinished() {
+						statusLabel.SetText("Seeding...")
+					} else {
+						statusLabel.SetText("Download Incomplete")
+					}
 				}()
 
 				// Initialize download stats
@@ -539,13 +543,15 @@ func main() {
 					gui.ShowError("Failed to parse torrent info", err, myWindow)
 					return
 				}
-
+				totalPieces := info.CountPieces()
+				log.Warnf("Torrent Info: Total Length = %d bytes, Piece Length = %d bytes, Total Pieces = %d",
+					info.TotalLength(), info.PieceLength, totalPieces)
 				// Initialize the file writer
 				var outputPath string
 				var mode os.FileMode
 				if len(info.Files) == 0 {
 					// Single-file torrent
-					outputPath = filepath.Join(downloadDir, info.Name)
+					outputPath = filepath.Join(downloadDir, info.Name) // Correctly set to file path
 					mode = 0644
 				} else {
 					// Multi-file torrent
@@ -560,8 +566,8 @@ func main() {
 				}
 
 				writer := metainfo.NewWriter(outputPath, info, mode)
-				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
-				dm.DownloadDir = downloadDir
+				//dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
+				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
 				progressTicker := time.NewTicker(1 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
@@ -693,7 +699,7 @@ func main() {
 
 				wg.Wait()
 
-				cancel()
+				// cancel() // Do Not Cancel the Seeding Context
 
 				if dm.IsFinished() {
 

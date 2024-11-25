@@ -183,7 +183,7 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 		// On disconnection, re-request pending blocks
 		reRequestPendingBlocks(pc, dm, ps)
 		dm.RemovePeer(pc)
-		pc.Close()
+		//pc.Close()
 	}()
 
 	// Send BitField

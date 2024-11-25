@@ -49,11 +49,12 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 				available++
 			}
 		}
+		info := dm.Writer.Info()
 		log.WithFields(logrus.Fields{
 			"peer":             pc.RemoteAddr().String(),
 			"bitfield_length":  len(msg.BitField),
 			"pieces_available": available,
-			"total_pieces":     dm.Writer.Info().CountPieces(),
+			"total_pieces":     info.CountPieces(),
 			"peer_choked":      pc.PeerChoked,
 		}).Info("Received bitfield")
 
@@ -177,15 +178,26 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 			log.WithError(err).Error("Error handling piece")
 			return err
 		}
-		/*
-			pendingAfter := atomic.LoadInt32(&ps.PendingRequests)
-			log.WithFields(logrus.Fields{
-				"piece_index":     msg.Index,
-				"pending_after":   pendingAfter,
-				"request_pending": ps.RequestPending,
-			}).Debug("Successfully processed piece")
 
-		*/
+		pendingAfter := atomic.LoadInt32(&ps.PendingRequests)
+		log.WithFields(logrus.Fields{
+			"piece_index":     msg.Index,
+			"pending_after":   pendingAfter,
+			"request_pending": ps.RequestPending,
+		}).Debug("Successfully processed piece")
+
+		//if dm.IsPieceComplete(msg.Index) { // Ensure this method accurately checks piece completion
+		// Call VerifyPiece to check if the piece is complete and valid
+		if dm.VerifyPiece(msg.Index) {
+			// Send 'Have' message to inform peers about the completed piece
+			err := pc.SendHave(msg.Index)
+			if err != nil {
+				log.WithError(err).Error("Failed to send 'Have' message to peer")
+			} else {
+				log.WithField("piece_index", msg.Index).Info("Sent 'Have' message to peer")
+			}
+		}
+
 		// Clear this block from RequestedBlocks
 		ps.Lock()
 		if blocks, exists := ps.RequestedBlocks[msg.Index]; exists {
@@ -302,8 +314,15 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 			break
 		}
 
-		offset := uint32(blockNum) * BlockSize
+		//offset := uint32(blockNum) * BlockSize
+		offset := blockNum * BlockSize
 		length := BlockSize
+
+		// Adjust length for the last block in the piece
+		info := dm.Writer.Info()
+		if int64(offset)+int64(length) > info.PieceLength {
+			length = int(info.PieceLength - int64(offset))
+		}
 
 		log.WithFields(logrus.Fields{
 			"piece_index": pieceIndex,
@@ -327,7 +346,7 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 		}
 
 		// Send the request
-		err := pc.SendRequest(pieceIndex, offset, uint32(length))
+		err := pc.SendRequest(pieceIndex, uint32(offset), uint32(length))
 		if err != nil {
 			log.WithError(err).Error("Failed to send request")
 			if firstErr == nil {

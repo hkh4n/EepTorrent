@@ -157,7 +157,8 @@ func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 	config := TrackerConfig{
 		Name:        "EepTorrent",
 		TrackerAddr: "bjnkpy2rpwwlyjgmxeolt2cnp7h4oe437mtd54hb3pve3gmjqp5a.b32.i2p",
-		Path:        "a",
+		//TrackerAddr: "opentracker.eeptorrent.i2p",
+		Path: "a",
 	}
 	return getPeersFromTracker(config, mi)
 }
