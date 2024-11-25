@@ -39,7 +39,8 @@ var log = logrus.StandardLogger()
 type PieceStatus struct {
 	Index       uint32
 	TotalBlocks uint32
-	Blocks      []bool // true if block is received
+	Blocks      []bool   // true if block is received
+	BlockData   [][]byte // Store block data until piece complete
 	Completed   bool
 	Mu          sync.Mutex
 }
@@ -246,6 +247,16 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		return nil // Ignore duplicate.
 	}
 
+	// Initialize BlockData if needed
+	if piece.BlockData == nil {
+		piece.BlockData = make([][]byte, piece.TotalBlocks)
+	}
+
+	// Store block data in memory and verify it
+	blockData := make([]byte, len(b))
+	copy(blockData, b)
+	piece.BlockData[blockNum] = blockData
+
 	// Write the block to disk.
 	n, err := dm.Writer.WriteBlock(index, offset, b)
 	if err != nil {
@@ -281,10 +292,23 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 			return nil
 		}
 
-		// Verify the piece's integrity.
-		if dm.VerifyPiece(index) {
+		// Combine all blocks and verify the complete piece
+		completeData := make([]byte, 0, info.PieceLength)
+		for _, blockData := range piece.BlockData {
+			completeData = append(completeData, blockData...)
+		}
+
+		expectedHash := info.Pieces[index]
+		actualHash := sha1.Sum(completeData)
+
+		if bytes.Equal(expectedHash[:], actualHash[:]) {
+			// Verified successfully
 			dm.Bitfield.Set(index)
 			piece.Completed = true
+
+			// Clear block data to free memory
+			piece.BlockData = nil
+
 			log.WithFields(logrus.Fields{
 				"piece_index":  index,
 				"total_pieces": len(dm.Pieces),
@@ -311,16 +335,14 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 				"piece_index": index,
 			}).Error("Piece verification failed")
 
-			// Reset all blocks for this piece
+			// Reset piece state
 			for i := range piece.Blocks {
 				piece.Blocks[i] = false
 			}
+			piece.BlockData = nil
 
 			// Reset progress counters for this piece
-			pieceLength := int64(len(b))
-			if int(index) == len(dm.Pieces)-1 {
-				pieceLength = info.TotalLength() - int64(index)*info.PieceLength
-			}
+			pieceLength := int64(len(completeData))
 			atomic.AddInt64(&dm.Downloaded, -pieceLength)
 			atomic.AddInt64(&dm.Left, pieceLength)
 
@@ -328,6 +350,7 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		}
 	}
 
+	// Handle endgame scenarios.
 	if dm.IsEndgame() && atomic.LoadInt64(&dm.Left) <= 0 {
 		log.Info("Endgame completed, finalizing download")
 		dm.RequestAllRemainingBlocks(dm.GetAllPeers())
@@ -639,13 +662,6 @@ func (dm *DownloadManager) FinalizeDownload() error {
 func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 	log.WithField("piece_index", index).Debug("Verifying piece")
 
-	// Read the downloaded piece data
-	pieceData, err := dm.ReadPiece(index)
-	if err != nil {
-		log.WithError(err).Error("Failed to read piece for verification")
-		return false
-	}
-
 	info := dm.Writer.Info()
 	totalPieces := info.CountPieces()
 
@@ -658,30 +674,50 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 		return false
 	}
 
-	// Extract the expected 20-byte SHA1 hash for the piece
-	expectedHash := info.Pieces[index] // This is of type [20]byte
+	piece := dm.Pieces[index]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
 
-	// Compute the actual SHA1 hash of the downloaded piece
-	actualHash := sha1.Sum(pieceData)
+	// If we have block data in memory, verify from that instead of disk
+	if piece.BlockData != nil {
+		completeData := make([]byte, 0, info.PieceLength)
+		for _, blockData := range piece.BlockData {
+			completeData = append(completeData, blockData...)
+		}
 
-	// Compare the expected and actual hashes
-	if !bytes.Equal(expectedHash[:], actualHash[:]) {
-		log.WithFields(logrus.Fields{
-			"piece_index":   index,
-			"expected_hash": fmt.Sprintf("%x", expectedHash[:]),
-			"actual_hash":   fmt.Sprintf("%x", actualHash[:]),
-		}).Error("Piece hash mismatch")
+		expectedHash := info.Pieces[index]
+		actualHash := sha1.Sum(completeData)
+
+		if !bytes.Equal(expectedHash[:], actualHash[:]) {
+			log.WithFields(logrus.Fields{
+				"piece_index":   index,
+				"expected_hash": fmt.Sprintf("%x", expectedHash),
+				"actual_hash":   fmt.Sprintf("%x", actualHash),
+			}).Error("Piece hash mismatch (memory verification)")
+			return false
+		}
+		return true
+	}
+
+	// Fall back to disk verification if no in-memory data
+	pieceData, err := dm.ReadPiece(index)
+	if err != nil {
+		log.WithError(err).Error("Failed to read piece for verification")
 		return false
 	}
 
-	// Mark the piece as completed in the Bitfield
-	dm.Mu.Lock()
-	dm.Bitfield.Set(index)
-	dm.Mu.Unlock()
+	expectedHash := info.Pieces[index]
+	actualHash := sha1.Sum(pieceData)
 
-	log.WithFields(logrus.Fields{
-		"piece_index": index,
-	}).Info("Piece verified successfully")
+	if !bytes.Equal(expectedHash[:], actualHash[:]) {
+		log.WithFields(logrus.Fields{
+			"piece_index":   index,
+			"expected_hash": fmt.Sprintf("%x", expectedHash),
+			"actual_hash":   fmt.Sprintf("%x", actualHash),
+		}).Error("Piece hash mismatch (disk verification)")
+		return false
+	}
+
 	return true
 }
 
