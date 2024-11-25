@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var log = logrus.StandardLogger()
@@ -46,19 +47,21 @@ type PieceStatus struct {
 }
 
 type DownloadManager struct {
-	Writer          metainfo.Writer
-	Pieces          []*PieceStatus
-	Bitfield        pp.BitField
-	Downloaded      int64
-	Uploaded        int64
-	Left            int64
-	Mu              sync.Mutex
-	CurrentPiece    uint32
-	CurrentOffset   uint32
-	RequestedBlocks map[uint32]map[uint32]bool // piece index -> offset -> requested
-	Peers           []*pp.PeerConn
-	DownloadDir     string
-	TotalPieces     int
+	Writer              metainfo.Writer
+	Pieces              []*PieceStatus
+	Bitfield            pp.BitField
+	Downloaded          int64
+	Uploaded            int64
+	Left                int64
+	Mu                  sync.Mutex
+	CurrentPiece        uint32
+	CurrentOffset       uint32
+	RequestedBlocks     map[uint32]map[uint32]bool // piece index -> offset -> requested
+	Peers               []*pp.PeerConn
+	DownloadDir         string
+	TotalPieces         int
+	UploadedThisSession int64
+	LastUploadTime      time.Time
 }
 
 // BlockInfo represents a specific block within a piece.
@@ -108,6 +111,14 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		DownloadDir:     downloadDir,
 	}
 }
+
+// Add method to track uploads
+func (dm *DownloadManager) TrackUpload(bytes int64) {
+	atomic.AddInt64(&dm.Uploaded, bytes)
+	atomic.AddInt64(&dm.UploadedThisSession, bytes)
+	dm.LastUploadTime = time.Now()
+}
+
 func (dm *DownloadManager) IsPieceComplete(pieceIndex uint32) bool {
 	if int(pieceIndex) >= len(dm.Pieces) {
 		return false

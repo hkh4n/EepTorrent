@@ -573,15 +573,13 @@ func main() {
 				downloadCancel = cancel
 
 				// Start the listener for incoming connections (seeding)
-				/*
-					go func() {
-						err := startPeerListener(dm, &mi)
-						if err != nil {
-							log.WithError(err).Error("Failed to start peer listener")
-						}
-					}()
 
-				*/
+				go func() {
+					err := startPeerListener(dm, &mi)
+					if err != nil {
+						log.WithError(err).Error("Failed to start peer listener")
+					}
+				}()
 
 				// Progress updater
 				go func() {
@@ -707,6 +705,10 @@ func main() {
 
 					dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", info.Name), myWindow)
 					statusLabel.SetText("Seeding...")
+					select {
+					case <-ctx.Done():
+						return
+					}
 
 				} else {
 					dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
@@ -791,30 +793,18 @@ func removeDuplicatePeers(peers [][]byte) [][]byte {
 	return uniquePeers
 }
 
-// In startPeerListener function
 func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) error {
-	/*
-		keys, err := i2p.GlobalSAM.NewKeys()
-		if err != nil {
-			return fmt.Errorf("Failed to generate keys for listener session: %v", err)
-		}
-	*/
-	/*
-		sessionName := fmt.Sprintf("EepTorrent-listenerSession-%d", os.Getpid())
-		listenerSession, err := i2p.GlobalSAM.NewStreamSession(sessionName, keys, sam3.Options_Default)
-		if err != nil {
-			return fmt.Errorf("Failed to create listener session: %v", err)
-		}
-	*/
 	listenerSession := i2p.GlobalStreamSession
 
+	// Start listening on the same destination as used for downloading
 	listener, err := listenerSession.Listen()
 	if err != nil {
 		return fmt.Errorf("Failed to start listening: %v", err)
 	}
 
-	log.Info("Started listener for incoming connections")
+	log.Info("Started seeding listener on address: ", listenerSession.Addr().Base32())
 
+	// Start accepting connections in a loop
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -822,7 +812,90 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) erro
 			continue
 		}
 
-		go handleIncomingConnection(conn, dm, mi)
+		// Handle each incoming connection in a goroutine
+		go func(conn net.Conn) {
+			defer conn.Close()
+
+			// Set appropriate timeouts
+			conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+			// Generate peer ID for this connection
+			peerId := util.GeneratePeerIdMeta()
+
+			// Perform handshake with the incoming peer
+			err := peer.PerformHandshake(conn, mi.InfoHash().Bytes(), string(peerId[:]))
+			if err != nil {
+				log.WithError(err).Error("Failed handshake with seeding peer")
+				return
+			}
+
+			// Create peer connection
+			pc := pp.NewPeerConn(conn, peerId, mi.InfoHash())
+			pc.Timeout = 30 * time.Second
+
+			// Add peer to download manager
+			dm.AddPeer(pc)
+			defer dm.RemovePeer(pc)
+
+			// Send our bitfield to the peer
+			err = pc.SendBitfield(dm.Bitfield)
+			if err != nil {
+				log.WithError(err).Error("Failed to send bitfield to seeding peer")
+				return
+			}
+
+			// Handle the peer connection - but in seeding mode
+			err = handleSeedingPeer(pc, dm)
+			if err != nil {
+				log.WithError(err).Error("Error handling seeding peer")
+			}
+		}(conn)
+	}
+}
+
+// New function to handle seeding peers
+func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager) error {
+	// Don't choke by default when seeding
+	err := pc.SendUnchoke()
+	if err != nil {
+		return fmt.Errorf("failed to send unchoke: %v", err)
+	}
+
+	for {
+		msg, err := pc.ReadMsg()
+		if err != nil {
+			return err
+		}
+
+		switch msg.Type {
+		case pp.MTypeRequest:
+			// Handle piece requests from peers
+			blockData, err := dm.GetBlock(msg.Index, msg.Begin, msg.Length)
+			if err != nil {
+				log.WithError(err).Error("Failed to get requested block")
+				continue
+			}
+
+			err = pc.SendPiece(msg.Index, msg.Begin, blockData)
+			if err != nil {
+				log.WithError(err).Error("Failed to send piece")
+				continue
+			}
+
+			// Update upload stats
+			atomic.AddInt64(&dm.Uploaded, int64(len(blockData)))
+
+		case pp.MTypeInterested:
+			// Immediately unchoke interested peers when seeding
+			err := pc.SendUnchoke()
+			if err != nil {
+				//
+			}
+
+		case pp.MTypeNotInterested:
+			// Can optionally choke uninterested peers to save resources
+			pc.SendChoke()
+		}
 	}
 }
 
