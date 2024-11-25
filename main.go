@@ -573,13 +573,15 @@ func main() {
 				downloadCancel = cancel
 
 				// Start the listener for incoming connections (seeding)
+				/*
+					go func() {
+						err := startPeerListener(dm, &mi)
+						if err != nil {
+							log.WithError(err).Error("Failed to start peer listener")
+						}
+					}()
 
-				go func() {
-					err := startPeerListener(dm, &mi)
-					if err != nil {
-						log.WithError(err).Error("Failed to start peer listener")
-					}
-				}()
+				*/
 
 				// Progress updater
 				go func() {

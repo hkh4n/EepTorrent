@@ -124,6 +124,37 @@ func (dm *DownloadManager) IsPieceComplete(pieceIndex uint32) bool {
 	return true
 }
 
+// reserveBlock atomically reserves a block for download
+func (dm *DownloadManager) reserveBlock(pieceIndex uint32, offset uint32) bool {
+	piece := dm.Pieces[pieceIndex]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+
+	blockIndex := offset / downloader.BlockSize
+	if blockIndex >= uint32(len(piece.Blocks)) {
+		return false
+	}
+
+	if piece.Blocks[blockIndex] {
+		return false // Block already received
+	}
+
+	// Mark block as reserved
+	piece.Blocks[blockIndex] = true
+	return true
+}
+
+// validatePieceSize ensures the piece length is correct
+func (dm *DownloadManager) validatePieceSize(index uint32, length int64) bool {
+	info := dm.Writer.Info()
+	if int(index) == info.CountPieces()-1 {
+		// Last piece may be shorter
+		remaining := info.TotalLength() - int64(index)*info.PieceLength
+		return length <= remaining
+	}
+	return length == info.PieceLength
+}
+
 // IsFinished checks if the download is complete
 func (dm *DownloadManager) IsFinished() bool {
 	log.Debug("Checking if download is finished")
@@ -182,6 +213,20 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		"length": len(b),
 	}).Debug("OnBlock called")
 
+	// Validate block size
+	info := dm.Writer.Info()
+	expectedBlockSize := downloader.BlockSize
+	if int64(offset)+int64(len(b)) > info.PieceLength {
+		expectedBlockSize = int(info.PieceLength - int64(offset))
+	}
+	if len(b) != expectedBlockSize {
+		log.WithFields(logrus.Fields{
+			"received_size": len(b),
+			"expected_size": expectedBlockSize,
+		}).Error("Invalid block size")
+		return fmt.Errorf("invalid block size: got %d, expected %d", len(b), expectedBlockSize)
+	}
+
 	// Calculate block number based on offset.
 	blockNum := offset / downloader.BlockSize
 	if blockNum >= piece.TotalBlocks {
@@ -222,6 +267,20 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 
 	// Check if the piece is completed.
 	if !piece.Completed && dm.isPieceComplete(piece) {
+		// Double-check piece completion before verification
+		allBlocksPresent := true
+		for _, received := range piece.Blocks {
+			if !received {
+				allBlocksPresent = false
+				break
+			}
+		}
+
+		if !allBlocksPresent {
+			log.WithField("piece_index", index).Warn("Piece appeared complete but some blocks missing")
+			return nil
+		}
+
 		// Verify the piece's integrity.
 		if dm.VerifyPiece(index) {
 			dm.Bitfield.Set(index)
@@ -240,7 +299,6 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 						"peer":        peerConn.RemoteAddr().String(),
 						"piece_index": index,
 					}).WithError(err).Error("Failed to send Have message to peer")
-					// Optionally handle the error, e.g., remove the unresponsive peer.
 				} else {
 					log.WithFields(logrus.Fields{
 						"peer":        peerConn.RemoteAddr().String(),
@@ -252,14 +310,24 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 			log.WithFields(logrus.Fields{
 				"piece_index": index,
 			}).Error("Piece verification failed")
-			// Verification
+
+			// Reset all blocks for this piece
 			for i := range piece.Blocks {
 				piece.Blocks[i] = false
 			}
+
+			// Reset progress counters for this piece
+			pieceLength := int64(len(b))
+			if int(index) == len(dm.Pieces)-1 {
+				pieceLength = info.TotalLength() - int64(index)*info.PieceLength
+			}
+			atomic.AddInt64(&dm.Downloaded, -pieceLength)
+			atomic.AddInt64(&dm.Left, pieceLength)
+
+			return fmt.Errorf("piece verification failed for index %d", index)
 		}
 	}
 
-	// Handle endgame scenarios.
 	if dm.IsEndgame() && atomic.LoadInt64(&dm.Left) <= 0 {
 		log.Info("Endgame completed, finalizing download")
 		dm.RequestAllRemainingBlocks(dm.GetAllPeers())
@@ -269,7 +337,6 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 				log.WithError(err).Error("Failed to finalize download")
 				return err
 			}
-			// Notify UI here
 		}
 	}
 
