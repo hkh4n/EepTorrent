@@ -36,7 +36,6 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
-	"github.com/go-i2p/sam3"
 	"github.com/sirupsen/logrus"
 	"github.com/wcharczuk/go-chart"
 	"io"
@@ -568,15 +567,13 @@ func main() {
 				downloadCancel = cancel
 
 				// Start the listener for incoming connections (seeding)
-				/*
-					go func() {
-						err := startPeerListener(dm, &mi)
-						if err != nil {
-							log.WithError(err).Error("Failed to start peer listener")
-						}
-					}()
 
-				*/
+				go func() {
+					err := startPeerListener(dm, &mi)
+					if err != nil {
+						log.WithError(err).Error("Failed to start peer listener")
+					}
+				}()
 
 				// Progress updater
 				go func() {
@@ -788,15 +785,20 @@ func removeDuplicatePeers(peers [][]byte) [][]byte {
 
 // In startPeerListener function
 func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo) error {
-	keys, err := i2p.GlobalSAM.NewKeys()
-	if err != nil {
-		return fmt.Errorf("Failed to generate keys for listener session: %v", err)
-	}
-	sessionName := fmt.Sprintf("EepTorrent-listenerSession-%d", os.Getpid())
-	listenerSession, err := i2p.GlobalSAM.NewStreamSession(sessionName, keys, sam3.Options_Default)
-	if err != nil {
-		return fmt.Errorf("Failed to create listener session: %v", err)
-	}
+	/*
+		keys, err := i2p.GlobalSAM.NewKeys()
+		if err != nil {
+			return fmt.Errorf("Failed to generate keys for listener session: %v", err)
+		}
+	*/
+	/*
+		sessionName := fmt.Sprintf("EepTorrent-listenerSession-%d", os.Getpid())
+		listenerSession, err := i2p.GlobalSAM.NewStreamSession(sessionName, keys, sam3.Options_Default)
+		if err != nil {
+			return fmt.Errorf("Failed to create listener session: %v", err)
+		}
+	*/
+	listenerSession := i2p.GlobalStreamSession
 
 	listener, err := listenerSession.Listen()
 	if err != nil {

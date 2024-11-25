@@ -301,20 +301,26 @@ func (dm *DownloadManager) LogProgress() {
 
 // Progress calculates the current download progress percentage
 func (dm *DownloadManager) Progress() float64 {
-	totalPieces := dm.Writer.Info().CountPieces()
-	completedPieces := 0
-	for i := 0; i < totalPieces; i++ {
-		if dm.Bitfield.IsSet(uint32(i)) {
-			completedPieces++
+	/*
+		totalPieces := dm.Writer.Info().CountPieces()
+		completedPieces := 0
+		for i := 0; i < totalPieces; i++ {
+			if dm.Bitfield.IsSet(uint32(i)) {
+				completedPieces++
+			}
 		}
-	}
-	progress := (float64(completedPieces) / float64(totalPieces)) * 100
-	log.WithFields(logrus.Fields{
-		"completed_pieces": completedPieces,
-		"total_pieces":     totalPieces,
-		"progress":         fmt.Sprintf("%.2f%%", progress),
-	}).Debug("Progress calculated")
-	return progress
+		progress := (float64(completedPieces) / float64(totalPieces)) * 100
+		log.WithFields(logrus.Fields{
+			"completed_pieces": completedPieces,
+			"total_pieces":     totalPieces,
+			"progress":         fmt.Sprintf("%.2f%%", progress),
+		}).Debug("Progress calculated")
+		return progress
+
+	*/
+	total := float64(dm.Writer.Info().TotalLength())
+	downloaded := float64(atomic.LoadInt64(&dm.Downloaded))
+	return (downloaded / total) * 100
 }
 
 // GetNextBlock retrieves the next block to request from a peer
