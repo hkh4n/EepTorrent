@@ -620,6 +620,14 @@ func main() {
 
 				// Get peers from trackers
 				var allPeers [][]byte
+
+				peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi)
+				if err != nil {
+					log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
+				} else {
+					allPeers = append(allPeers, peersEep...)
+				}
+
 				peersPostman, err := tracker.GetPeersFromPostmanTracker(&mi)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from Postman Tracker")
@@ -651,6 +659,20 @@ func main() {
 					allPeers = append(allPeers, peersSkank...)
 				}
 				time.Sleep(1 * time.Second)
+
+				peersOmit, err := tracker.GetPeersFromOmitTracker(&mi)
+				if err != nil {
+					log.WithError(err).Warn("Failed to get peers from Omit Tracker")
+				} else {
+					allPeers = append(allPeers, peersOmit...)
+				}
+
+				peers6kw6, err := tracker.GetPeersFrom6kw6Tracker(&mi)
+				if err != nil {
+					log.WithError(err).Warn("Failed to get peers from 6kw6 Tracker")
+				} else {
+					allPeers = append(allPeers, peers6kw6...)
+				}
 
 				if len(allPeers) == 0 {
 					gui.ShowError("Failed to get peers from any tracker", fmt.Errorf("No peers found"), myWindow)
