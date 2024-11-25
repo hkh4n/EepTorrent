@@ -191,12 +191,6 @@ func init() {
 }
 
 func main() {
-	err := i2p.InitSAM()
-	if err != nil {
-		log.Fatalf("Failed to initialize SAM: %v", err)
-	}
-	defer i2p.CloseSAM()
-	// Initialize the Fyne application with a unique ID to satisfy Preferences API
 	myApp := app.NewWithID("com.i2p.EepTorrent")
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
@@ -361,6 +355,21 @@ func main() {
 	scrollableMenu.SetMinSize(fyne.NewSize(150, 0))
 
 	content := container.NewBorder(nil, nil, scrollableMenu, nil, mainContent)
+
+	// Initially, hide main content until SAM is initialized
+	mainContent.Hide()
+
+	// Display SAM Settings Dialog
+	gui.ShowSAMSettingsDialog(myApp, myWindow, func(success bool, err error) {
+		if !success {
+			if err != nil {
+				gui.ShowError("SAM Initialization Failed", err, myWindow)
+			}
+			myApp.Quit()
+			return
+		}
+		mainContent.Show()
+	})
 
 	myWindow.SetContent(content)
 	myWindow.Resize(fyne.NewSize(800, 600))
@@ -691,6 +700,10 @@ func main() {
 			downloadCancel()
 		}
 	}
+	// Show the window but keep main content hidden until SAM is initialized
+	myWindow.SetContent(content)
+	myWindow.Resize(fyne.NewSize(800, 600))
+	myWindow.Show()
 
 	// Show the window and start the GUI event loop
 	myWindow.ShowAndRun()

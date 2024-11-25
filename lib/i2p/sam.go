@@ -25,10 +25,50 @@ import (
 	"strconv"
 )
 
+// SAMConfig holds the configuration options for SAM sessions.
+type SAMConfig struct {
+	InboundLength          int
+	OutboundLength         int
+	InboundQuantity        int
+	OutboundQuantity       int
+	InboundBackupQuantity  int
+	OutboundBackupQuantity int
+	InboundLengthVariance  int
+	OutboundLengthVariance int
+}
+
+// ToOptions converts SAMConfig to a slice of option strings.
+func (cfg *SAMConfig) ToOptions() []string {
+	return []string{
+		fmt.Sprintf("inbound.length=%d", cfg.InboundLength),
+		fmt.Sprintf("outbound.length=%d", cfg.OutboundLength),
+		fmt.Sprintf("inbound.quantity=%d", cfg.InboundQuantity),
+		fmt.Sprintf("outbound.quantity=%d", cfg.OutboundQuantity),
+		fmt.Sprintf("inbound.backupQuantity=%d", cfg.InboundBackupQuantity),
+		fmt.Sprintf("outbound.backupQuantity=%d", cfg.OutboundBackupQuantity),
+		fmt.Sprintf("inbound.lengthVariance=%d", cfg.InboundLengthVariance),
+		fmt.Sprintf("outbound.lengthVariance=%d", cfg.OutboundLengthVariance),
+	}
+}
+
+// DefaultSAMConfig returns the default SAM configuration.
+func DefaultSAMConfig() SAMConfig {
+	return SAMConfig{
+		InboundLength:          1,
+		OutboundLength:         1,
+		InboundQuantity:        3,
+		OutboundQuantity:       3,
+		InboundBackupQuantity:  1,
+		OutboundBackupQuantity: 1,
+		InboundLengthVariance:  0,
+		OutboundLengthVariance: 0,
+	}
+}
+
 var GlobalSAM *sam3.SAM
 var GlobalStreamSession *sam3.StreamSession
 
-func InitSAM() error {
+func InitSAM(cfg SAMConfig) error {
 	var err error
 	GlobalSAM, err = sam3.NewSAM("127.0.0.1:7656")
 	if err != nil {
@@ -39,18 +79,19 @@ func InitSAM() error {
 	if err != nil {
 		return fmt.Errorf("Failed to generate keys for global SAM session: %v", err)
 	}
-
-	options := []string{
-		"inbound.length=1",
-		"outbound.length=1",
-		"inbound.quantity=3",
-		"outbound.quantity=3",
-		"inbound.backupQuantity=1",
-		"outbound.backupQuantity=1",
-		"inbound.lengthVariance=0",
-		"outbound.lengthVariance=0",
-	}
-
+	/*
+		options := []string{
+			"inbound.length=1",
+			"outbound.length=1",
+			"inbound.quantity=3",
+			"outbound.quantity=3",
+			"inbound.backupQuantity=1",
+			"outbound.backupQuantity=1",
+			"inbound.lengthVariance=0",
+			"outbound.lengthVariance=0",
+		}
+	*/
+	options := cfg.ToOptions()
 	globalSessionName := fmt.Sprintf("global-session-%d", os.Getpid())
 	GlobalStreamSession, err = GlobalSAM.NewStreamSessionWithSignature(
 		globalSessionName,
