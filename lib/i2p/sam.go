@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import (
 	"fmt"
+	"github.com/go-i2p/i2pkeys"
 	"github.com/go-i2p/sam3"
 	"os"
 	"strconv"
@@ -67,6 +68,7 @@ func DefaultSAMConfig() SAMConfig {
 
 var GlobalSAM *sam3.SAM
 var GlobalStreamSession *sam3.StreamSession
+var GlobalKeys i2pkeys.I2PKeys
 
 func InitSAM(cfg SAMConfig) error {
 	var err error
@@ -75,32 +77,23 @@ func InitSAM(cfg SAMConfig) error {
 		return fmt.Errorf("Failed to create global SAM session: %v", err)
 	}
 
-	globalKeys, err := GlobalSAM.NewKeys()
+	GlobalKeys, err = GlobalSAM.NewKeys()
 	if err != nil {
-		return fmt.Errorf("Failed to generate keys for global SAM session: %v", err)
+		//return fmt.Errorf("Failed to generate keys for global SAM session: %v", err)
+		panic(err)
 	}
-	/*
-		options := []string{
-			"inbound.length=1",
-			"outbound.length=1",
-			"inbound.quantity=3",
-			"outbound.quantity=3",
-			"inbound.backupQuantity=1",
-			"outbound.backupQuantity=1",
-			"inbound.lengthVariance=0",
-			"outbound.lengthVariance=0",
-		}
-	*/
+
 	options := cfg.ToOptions()
 	globalSessionName := fmt.Sprintf("global-session-%d", os.Getpid())
 	GlobalStreamSession, err = GlobalSAM.NewStreamSessionWithSignature(
 		globalSessionName,
-		globalKeys,
+		GlobalKeys,
 		options,
 		strconv.Itoa(7),
 	)
 	if err != nil {
-		return fmt.Errorf("Failed to create global SAM stream session: %v", err)
+		//return fmt.Errorf("Failed to create global SAM stream session: %v", err)
+		panic(err)
 	}
 
 	return nil

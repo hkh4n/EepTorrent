@@ -45,11 +45,7 @@ type TrackerConfig struct {
 func getPeersFromTracker(tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, error) {
 	log.Infof("getting peers from %s tracker", tc.Name)
 	sam := i2p.GlobalSAM
-	keys, err := i2p.GlobalSAM.NewKeys()
-	if err != nil {
-		log.WithError(err).Error("Failed to generate SAM keys")
-		return nil, err
-	}
+	keys := i2p.GlobalKeys
 	stream := i2p.GlobalStreamSession
 	addr, err := sam.Lookup(tc.TrackerAddr)
 	if err != nil {
