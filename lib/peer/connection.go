@@ -135,35 +135,21 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 }
 
 func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
-	// Set the initial connection deadline
-	deadline := time.Now().Add(15 * time.Second)
-	err := pc.Conn.SetDeadline(deadline)
-	if err != nil {
-		return fmt.Errorf("failed to set deadline: %v", err)
-	}
+	// Create a done channel for cleanup
+	done := make(chan struct{})
+	defer close(done)
 
-	log := log.WithField("peer", pc.RemoteAddr().String())
-
-	// Initialize per-peer state
 	ps := NewPeerState()
 
-	// Add the peer to the DownloadManager
 	dm.AddPeer(pc)
-	defer func() {
-		// On disconnection, re-request pending blocks
-		reRequestPendingBlocks(pc, dm, ps)
-		dm.RemovePeer(pc)
-		//pc.Close()
-	}()
+	defer dm.RemovePeer(pc)
 
-	// Send BitField
-	err = pc.SendBitfield(dm.Bitfield)
+	err := pc.SendBitfield(dm.Bitfield)
 	if err != nil {
 		log.WithError(err).Error("Failed to send Bitfield")
 		return fmt.Errorf("failed to send Bitfield: %v", err)
 	}
 
-	// Send Interested message
 	err = pc.SendInterested()
 	if err != nil {
 		log.WithError(err).Error("Failed to send Interested message")
@@ -172,41 +158,55 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 
 	log.Info("Successfully initiated peer connection")
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("Peer connection cancelled")
-			return nil
-		default:
-			// Set a short read deadline to allow periodic context checks
-			err := pc.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			if err != nil {
-				log.WithError(err).Error("Failed to set read deadline")
-				return fmt.Errorf("failed to set read deadline: %v", err)
-			}
+	go func() {
+		defer func() {
+			pc.Close()
+			done <- struct{}{}
+		}()
 
-			msg, err := pc.ReadMsg()
-			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					// Read timeout, continue to check context
-					continue
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				err := pc.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+				if err != nil {
+					log.WithError(err).Error("Failed to set read deadline")
+					return
 				}
-				if err == io.EOF {
-					log.Info("Peer connection closed by peer")
-					return nil
+
+				msg, err := pc.ReadMsg()
+				if err != nil {
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						// Just a timeout, continue reading
+						continue
+					}
+					if err == io.EOF {
+						log.Info("Peer connection closed by peer")
+						return
+					}
+					log.WithError(err).Error("Error reading message from peer")
+					return
 				}
-				log.WithError(err).Error("Error reading message from peer")
-				return err
-			}
 
-			log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
+				log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
 
-			err = handleMessage(pc, msg, dm, ps)
-			if err != nil {
-				log.WithError(err).Error("Error handling message from peer")
-				return err
+				if err := handleMessage(pc, msg, dm, ps); err != nil {
+					log.WithError(err).Error("Error handling message from peer")
+					return
+				}
 			}
 		}
+	}()
+
+	// Wait for either context cancellation or connection completion
+	select {
+	case <-ctx.Done():
+		log.Info("Peer connection cancelled")
+		pc.Close()
+		return nil
+	case <-done:
+		return nil
 	}
 }
 func reRequestPendingBlocks(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerState) {
