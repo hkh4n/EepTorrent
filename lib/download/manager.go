@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/downloader"
@@ -62,6 +63,9 @@ type DownloadManager struct {
 	TotalPieces         int
 	UploadedThisSession int64
 	LastUploadTime      time.Time
+	ctx                 context.Context
+	cancelFunc          context.CancelFunc
+	wg                  sync.WaitGroup
 }
 
 // BlockInfo represents a specific block within a piece.
@@ -72,6 +76,7 @@ type BlockInfo struct {
 }
 
 func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength int64, totalPieces int, downloadDir string) *DownloadManager {
+	ctx, cancel := context.WithCancel(context.Background())
 	log.WithFields(logrus.Fields{
 		"total_length": totalLength,
 		"piece_length": pieceLength,
@@ -109,7 +114,15 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		RequestedBlocks: make(map[uint32]map[uint32]bool), // Initialize RequestedBlocks
 		Peers:           make([]*pp.PeerConn, 0),          // Initialize Peers
 		DownloadDir:     downloadDir,
+		ctx:             ctx,
+		cancelFunc:      cancel,
 	}
+}
+
+// Shutdown gracefully shuts down the DownloadManager.
+func (dm *DownloadManager) Shutdown() {
+	dm.cancelFunc()
+	dm.wg.Wait()
 }
 
 // Add method to track uploads

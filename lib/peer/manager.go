@@ -15,8 +15,9 @@ type PeerManager struct {
 	Peers           map[*pp.PeerConn]*PeerState
 	downloadManager *download.DownloadManager
 	lastUnchoking   time.Time
-	// Track peer performance
-	peerStats map[*pp.PeerConn]*PeerStats
+	peerStats       map[*pp.PeerConn]*PeerStats
+	shutdownChan    chan struct{}
+	wg              sync.WaitGroup
 }
 
 type PeerStats struct {
@@ -33,13 +34,17 @@ func NewPeerManager(dm *download.DownloadManager) *PeerManager {
 		Peers:           make(map[*pp.PeerConn]*PeerState),
 		downloadManager: dm,
 		peerStats:       make(map[*pp.PeerConn]*PeerStats),
+		shutdownChan:    make(chan struct{}),
 	}
 
 	// Start periodic unchoking algorithm
 	go pm.runChokingAlgorithm()
 	return pm
 }
-
+func (pm *PeerManager) Shutdown() {
+	close(pm.shutdownChan)
+	pm.wg.Wait()
+}
 func (pm *PeerManager) runChokingAlgorithm() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()

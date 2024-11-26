@@ -105,11 +105,15 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 
 	// Set read/write deadlines on the connection
 	deadline := time.Now().Add(30 * time.Second)
-	peerConn.SetDeadline(deadline)
+	err := peerConn.SetDeadline(deadline)
+	if err != nil {
+		log.Errorf("Failed to set deadline: %v", err)
+		return fmt.Errorf("failed to set deadline: %v", err)
+	}
 
 	// Perform the BitTorrent handshake
 	peerId := util.GeneratePeerIdMeta()
-	err := PerformHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
+	err = PerformHandshake(peerConn, mi.InfoHash().Bytes(), string(peerId[:]))
 	if err != nil {
 		log.Errorf("Handshake with peer %s failed: %v", peerB32Addr, err)
 		return fmt.Errorf("failed to handshake with peer %s: %v", peerB32Addr, err)
@@ -131,7 +135,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 }
 
 func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
-	// Set the connection deadline
+	// Set the initial connection deadline
 	deadline := time.Now().Add(15 * time.Second)
 	err := pc.Conn.SetDeadline(deadline)
 	if err != nil {
@@ -156,14 +160,14 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 	err = pc.SendBitfield(dm.Bitfield)
 	if err != nil {
 		log.WithError(err).Error("Failed to send Bitfield")
-		return fmt.Errorf("Failed to send Bitfield: %v", err)
+		return fmt.Errorf("failed to send Bitfield: %v", err)
 	}
 
 	// Send Interested message
 	err = pc.SendInterested()
 	if err != nil {
 		log.WithError(err).Error("Failed to send Interested message")
-		return fmt.Errorf("Failed to send Interested message: %v", err)
+		return fmt.Errorf("failed to send Interested message: %v", err)
 	}
 
 	log.Info("Successfully initiated peer connection")
@@ -174,10 +178,28 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 			log.Info("Peer connection cancelled")
 			return nil
 		default:
+			// Set a short read deadline to allow periodic context checks
+			err := pc.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			if err != nil {
+				log.WithError(err).Error("Failed to set read deadline")
+				return fmt.Errorf("failed to set read deadline: %v", err)
+			}
+
 			msg, err := pc.ReadMsg()
 			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					// Read timeout, check if context is done
+					select {
+					case <-ctx.Done():
+						log.Info("Peer connection cancelled during read timeout")
+						return nil
+					default:
+						// Continue to read next message
+						continue
+					}
+				}
 				if err == io.EOF {
-					log.Info("Peer connection closed")
+					log.Info("Peer connection closed by peer")
 					return nil
 				}
 				log.WithError(err).Error("Error reading message from peer")
