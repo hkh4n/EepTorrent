@@ -39,17 +39,14 @@ import (
 )
 
 func TestBench1MB(t *testing.T) {
-	// Initialize logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.SetOutput(os.Stdout)
 	log.Println("Starting Bench1MB test")
 
-	// Initialize SAM
 	err := i2p.InitSAM(i2p.DefaultSAMConfig())
 	assert.NoError(t, err, "Failed to initialize SAM")
 	defer i2p.CloseSAM()
 
-	// Load the test torrent file
 	torrentPath := filepath.Join("testdata", "test_1mb.txt.torrent")
 	mi, err := metainfo.LoadFromFile(torrentPath)
 	assert.NoError(t, err, "Failed to load test torrent")
@@ -59,40 +56,29 @@ func TestBench1MB(t *testing.T) {
 
 	// Create a temporary directory for downloading
 	downloadDir, err := ioutil.TempDir("", "eeptorrent-bench1mb-download")
-	//downloadDir := os.TempDir()
 	assert.NoError(t, err, "Failed to create temporary download directory")
 	defer os.RemoveAll(downloadDir)
 
-	// Determine the path for the downloaded file
 	var downloadedFilePath string
 	if len(info.Files) == 0 {
-		// Single-file torrent
 		downloadedFilePath = filepath.Join(downloadDir, info.Name)
 	} else {
-		// Multi-file torrent (for simplicity, assume single file in test)
-		// Adjust accordingly if testing multi-file torrents
 		downloadedFilePath = filepath.Join(downloadDir, info.Name, info.Files[0].Path(info))
-		// Create necessary directories
 		err := os.MkdirAll(filepath.Dir(downloadedFilePath), 0755)
 		assert.NoError(t, err, "Failed to create directories for multi-file torrent")
 	}
 
-	// Initialize the file writer for downloading
 	writer := metainfo.NewWriter(downloadedFilePath, info, 0644)
 	defer func() {
 		err := writer.Close()
-		if err != nil {
-			log.Printf("Failed to close writer: %v", err)
-		}
+		assert.NoError(t, err, "Failed to close writer")
 	}()
 
 	dm := download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
 	assert.NotNil(t, dm, "Failed to initialize DownloadManager")
-	//defer dm.Shutdown()
 
 	pm := peer.NewPeerManager(dm)
 	assert.NotNil(t, pm, "Failed to initialize PeerManager")
-	//defer pm.Shutdown()
 
 	log.Println("Fetching peers from EepTorrent Tracker")
 	peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
@@ -100,98 +86,131 @@ func TestBench1MB(t *testing.T) {
 	assert.NotEmpty(t, peers, "No peers returned from EepTorrent Tracker")
 	log.Printf("Fetched %d peers from EepTorrent Tracker", len(peers))
 
-	var wg sync.WaitGroup
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	// Start connecting to peers
-	for index, peerHash := range peers {
+	var wg sync.WaitGroup
+	downloadComplete := make(chan struct{})
 
-		if index >= 50 {
-			break
-		}
-
-		wg.Add(1)
-		go func(ph []byte, idx int) {
-			defer wg.Done()
-			err := peer.ConnectToPeer(ctx, ph, idx, &mi, dm)
-			if err != nil {
-				log.Printf("Failed to connect to peer %d (%x): %v", idx, ph, err)
-			} else {
-				log.Printf("Successfully connected to peer %d (%x)", idx, ph)
-			}
-		}(peerHash, index)
-	}
-
-	// Start monitoring download progress in a separate goroutine
-	progressDone := make(chan struct{})
+	// Progress monitoring
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+		defer close(downloadComplete)
+
+		startTime := time.Now()
+		var lastDownloaded int64
 
 		for {
 			select {
 			case <-ctx.Done():
-				log.Println("Context cancelled, stopping download monitoring")
-				close(progressDone)
 				return
 			case <-ticker.C:
+				currentDownloaded := atomic.LoadInt64(&dm.Downloaded)
+				downloadedDiff := currentDownloaded - lastDownloaded
+				speed := float64(downloadedDiff) / 5.0
 				progress := dm.Progress()
-				downloaded := atomic.LoadInt64(&dm.Downloaded)
 				left := atomic.LoadInt64(&dm.Left)
-				log.Printf("Download Progress: %.2f%%, Downloaded: %d bytes, Left: %d bytes", progress, downloaded, left)
+				elapsed := time.Since(startTime)
+
+				log.Printf("Progress: %.2f%%, Speed: %.2f KB/s, Downloaded: %d bytes, Left: %d bytes, Elapsed: %v",
+					progress, speed/1024.0, currentDownloaded, left, elapsed.Round(time.Second))
+
+				lastDownloaded = currentDownloaded
 
 				if dm.IsFinished() {
-					log.Println("Download completed successfully")
-					// Cancel the context to stop peer connections
-					cancel()
-					close(progressDone)
+					log.Printf("Download completed, verifying pieces...")
+					// Verify all pieces before declaring completion
+					for i := 0; i < info.CountPieces(); i++ {
+						if !dm.VerifyPiece(uint32(i)) {
+							log.Printf("Piece %d verification failed", i)
+							return
+						}
+					}
+					log.Printf("Download completed in %v", elapsed.Round(time.Second))
 					return
 				}
 			}
 		}
 	}()
 
-	// Wait for either download completion or context timeout
+	// Start peer connections with timeout handling
+	peerCtx, peerCancel := context.WithCancel(ctx)
+	defer peerCancel()
+
+	maxPeers := 50
+	if len(peers) < maxPeers {
+		maxPeers = len(peers)
+	}
+
+	for i := 0; i < maxPeers; i++ {
+		wg.Add(1)
+		go func(peerHash []byte, idx int) {
+			defer wg.Done()
+			peer.ConnectToPeer(peerCtx, peerHash, idx, &mi, dm)
+		}(peers[i], i)
+	}
+
+	// Wait for either completion or timeout
 	select {
-	case <-progressDone:
-		// Proceed to verification
+	case <-downloadComplete:
+		log.Println("Download completed successfully")
 	case <-ctx.Done():
-		if dm.IsFinished() {
-			log.Println("Download completed successfully after timeout")
-		} else {
-			t.Fatal("Benchmark timed out before download completion")
+		// Cancel peer connections first
+		peerCancel()
+		if !dm.IsFinished() {
+			t.Fatal("Test timed out before download completion")
 		}
 	}
 
-	// Wait for all peer connection attempts to finish
-	dm.Shutdown()
-	pm.Shutdown()
-	log.Println("Waiting for peer connections to finish...")
-	wg.Wait()
+	// Clean shutdown with timeout
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cleanupCancel()
 
-	// Final verification of the downloaded file
+	// Cancel remaining peer connections
+	peerCancel()
+
+	// Wait for connections with timeout
+	cleanupDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(cleanupDone)
+	}()
+
+	select {
+	case <-cleanupDone:
+		log.Println("All peer connections cleaned up")
+	case <-cleanupCtx.Done():
+		t.Log("Warning: Cleanup timed out")
+	}
+
+	pm.Shutdown()
+	dm.Shutdown()
+
+	// Verify download
 	if len(info.Files) == 0 {
-		// Single-file torrent
+		// Verify single file
 		assert.FileExists(t, downloadedFilePath, "Downloaded file does not exist")
 
 		downloadedData, err := ioutil.ReadFile(downloadedFilePath)
 		assert.NoError(t, err, "Failed to read downloaded file")
 
+		// Verify size
 		expectedSize := info.TotalLength()
 		actualSize := int64(len(downloadedData))
-		assert.Equal(t, expectedSize, actualSize, "Downloaded file size does not match expected size")
+		assert.Equal(t, expectedSize, actualSize, "Downloaded file size mismatch")
 
-		// Verify SHA1 hash of the downloaded data
+		// Verify hash
 		actualHash := sha1.Sum(downloadedData)
 		expectedHash := info.Pieces[0][:]
-		assert.True(t, bytes.Equal(expectedHash, actualHash[:]), "Downloaded file hash does not match expected hash")
-		log.Println("Downloaded file verified successfully")
+		assert.True(t, bytes.Equal(expectedHash, actualHash[:]),
+			"Downloaded file hash mismatch. Expected: %x, Got: %x", expectedHash, actualHash[:])
+
+		log.Printf("File verification successful. Size: %d bytes", actualSize)
 	} else {
-		// Multi-file torrent (not implemented in this test)
-		t.Skip("Multi-file torrent verification not implemented in TestBench1MB")
+		// Multi-file verification not implemented
+		t.Skip("Multi-file torrent verification not implemented")
 	}
 
-	t.Log("TestBench1MB completed successfully")
+	log.Println("TestBench1MB completed successfully")
 }

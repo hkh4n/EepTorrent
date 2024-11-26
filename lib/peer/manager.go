@@ -46,51 +46,61 @@ func (pm *PeerManager) Shutdown() {
 	pm.wg.Wait()
 }
 func (pm *PeerManager) runChokingAlgorithm() {
+	pm.wg.Add(1) // Add to wait group
+	defer pm.wg.Done()
+
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		pm.Mu.Lock()
-		now := time.Now()
+	for {
+		select {
+		case <-ticker.C:
+			pm.Mu.Lock()
+			now := time.Now()
 
-		// Sort peers by download rate
-		var peerList []*pp.PeerConn
-		for peer := range pm.Peers {
-			peerList = append(peerList, peer)
-		}
+			// Sort peers by download rate
+			var peerList []*pp.PeerConn
+			for peer := range pm.Peers {
+				peerList = append(peerList, peer)
+			}
 
-		sort.Slice(peerList, func(i, j int) bool {
-			statsI := pm.peerStats[peerList[i]]
-			statsJ := pm.peerStats[peerList[j]]
-			return statsI.downloadRate > statsJ.downloadRate
-		})
+			sort.Slice(peerList, func(i, j int) bool {
+				statsI := pm.peerStats[peerList[i]]
+				statsJ := pm.peerStats[peerList[j]]
+				return statsI.downloadRate > statsJ.downloadRate
+			})
 
-		// Unchoke top 4 downloading peers
-		for i, peer := range peerList {
-			if i < 4 {
-				if peer.Choked {
-					peer.SendUnchoke()
-				}
-			} else {
-				if !peer.Choked { // Choked vs PeerChoked
-					peer.SendChoke()
+			// Unchoke top 4 downloading peers
+			for i, peer := range peerList {
+				if i < 4 {
+					if peer.Choked {
+						peer.SendUnchoke()
+					}
+				} else {
+					if !peer.Choked { // Choked vs PeerChoked
+						peer.SendChoke()
+					}
 				}
 			}
-		}
 
-		// Optimistic unchoking: randomly unchoke one additional peer every 30 seconds
-		if now.Sub(pm.lastUnchoking) > 30*time.Second {
-			if len(peerList) > 4 {
-				randomIndex := 4 + rand.Intn(len(peerList)-4)
-				peer := peerList[randomIndex]
-				if peer.Choked {
-					peer.SendUnchoke()
+			// Optimistic unchoking: randomly unchoke one additional peer every 30 seconds
+			if now.Sub(pm.lastUnchoking) > 30*time.Second {
+				if len(peerList) > 4 {
+					randomIndex := 4 + rand.Intn(len(peerList)-4)
+					peer := peerList[randomIndex]
+					if peer.Choked {
+						peer.SendUnchoke()
+					}
 				}
+				pm.lastUnchoking = now
 			}
-			pm.lastUnchoking = now
-		}
 
-		pm.Mu.Unlock()
+			pm.Mu.Unlock()
+
+		case <-pm.shutdownChan:
+			log.Info("Shutting down choking algorithm goroutine")
+			return
+		}
 	}
 }
 

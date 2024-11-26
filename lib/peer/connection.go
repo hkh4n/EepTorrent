@@ -81,7 +81,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	connCh := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		conn, err := peerStream.Dial("tcp", peerDest.String())
+		conn, err := peerStream.DialContext(connCtx, "tcp", peerDest.Base64())
 		if err != nil {
 			errCh <- err
 			return
@@ -188,15 +188,8 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 			msg, err := pc.ReadMsg()
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					// Read timeout, check if context is done
-					select {
-					case <-ctx.Done():
-						log.Info("Peer connection cancelled during read timeout")
-						return nil
-					default:
-						// Continue to read next message
-						continue
-					}
+					// Read timeout, continue to check context
+					continue
 				}
 				if err == io.EOF {
 					log.Info("Peer connection closed by peer")
