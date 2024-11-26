@@ -224,8 +224,8 @@ func TestBench1MB(t *testing.T) {
 		actualHash := sha1.Sum(downloadedData)
 		expectedHash := info.Pieces[0][:]
 		if !bytes.Equal(expectedHash, actualHash[:]) {
-			log.Printf("First 32 bytes of file: %x", downloadedData[:32])
-			log.Printf("Last 32 bytes of file: %x", downloadedData[len(downloadedData)-32:])
+			log.Printf("First 32 bytes of file:\t %x", downloadedData[:32])
+			log.Printf("Last 32 bytes of file:\t %x", downloadedData[len(downloadedData)-32:])
 			t.Errorf("Hash mismatch: Expected %x, got %x", expectedHash, actualHash[:])
 		} else {
 			log.Printf("File verification successful. Size: %d bytes", actualSize)
