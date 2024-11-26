@@ -38,10 +38,8 @@ import (
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
 	"io"
-	"math/rand"
 	"net"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -59,200 +57,6 @@ var (
 	logFileMux   sync.Mutex
 	logBuffer    bytes.Buffer
 )
-
-// PeerManager handles peer choking/unchoking and optimistic unchoking
-type PeerManager struct {
-	mu              sync.Mutex
-	peers           map[*pp.PeerConn]*peer.PeerState
-	downloadManager *download.DownloadManager
-	lastUnchoking   time.Time
-	// Track peer performance
-	peerStats map[*pp.PeerConn]*PeerStats
-}
-
-type PeerStats struct {
-	bytesDownloaded int64
-	bytesUploaded   int64
-	lastDownload    time.Time
-	lastUpload      time.Time
-	downloadRate    float64
-	uploadRate      float64
-}
-
-func NewPeerManager(dm *download.DownloadManager) *PeerManager {
-	pm := &PeerManager{
-		peers:           make(map[*pp.PeerConn]*peer.PeerState),
-		downloadManager: dm,
-		peerStats:       make(map[*pp.PeerConn]*PeerStats),
-	}
-
-	// Start periodic unchoking algorithm
-	go pm.runChokingAlgorithm()
-	return pm
-}
-
-func (pm *PeerManager) runChokingAlgorithm() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		pm.mu.Lock()
-		now := time.Now()
-
-		// Sort peers by download rate
-		var peerList []*pp.PeerConn
-		for peer := range pm.peers {
-			peerList = append(peerList, peer)
-		}
-
-		sort.Slice(peerList, func(i, j int) bool {
-			statsI := pm.peerStats[peerList[i]]
-			statsJ := pm.peerStats[peerList[j]]
-			return statsI.downloadRate > statsJ.downloadRate
-		})
-
-		// Unchoke top 4 downloading peers
-		for i, peer := range peerList {
-			if i < 4 {
-				if peer.Choked {
-					peer.SendUnchoke()
-				}
-			} else {
-				if !peer.Choked { // Choked vs PeerChoked
-					peer.SendChoke()
-				}
-			}
-		}
-
-		// Optimistic unchoking: randomly unchoke one additional peer every 30 seconds
-		if now.Sub(pm.lastUnchoking) > 30*time.Second {
-			if len(peerList) > 4 {
-				randomIndex := 4 + rand.Intn(len(peerList)-4)
-				peer := peerList[randomIndex]
-				if peer.Choked {
-					peer.SendUnchoke()
-				}
-			}
-			pm.lastUnchoking = now
-		}
-
-		pm.mu.Unlock()
-	}
-}
-
-func (pm *PeerManager) UpdatePeerStats(pc *pp.PeerConn, bytesDownloaded, bytesUploaded int64) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	stats, exists := pm.peerStats[pc]
-	if !exists {
-		stats = &PeerStats{}
-		pm.peerStats[pc] = stats
-	}
-
-	now := time.Now()
-
-	// Update download stats
-	if bytesDownloaded > 0 {
-		duration := now.Sub(stats.lastDownload).Seconds()
-		if duration > 0 {
-			stats.downloadRate = float64(bytesDownloaded) / duration
-		}
-		stats.bytesDownloaded += bytesDownloaded
-		stats.lastDownload = now
-	}
-
-	// Update upload stats
-	if bytesUploaded > 0 {
-		duration := now.Sub(stats.lastUpload).Seconds()
-		if duration > 0 {
-			stats.uploadRate = float64(bytesUploaded) / duration
-		}
-		stats.bytesUploaded += bytesUploaded
-		stats.lastUpload = now
-	}
-}
-
-// Call this when receiving data from a peer
-func (pm *PeerManager) OnDownload(pc *pp.PeerConn, bytes int64) {
-	// If we're downloading from a peer, express interest and try to reciprocate
-	if !pc.Interested {
-		pc.SendInterested()
-	}
-	pm.UpdatePeerStats(pc, bytes, 0)
-}
-
-// Call this when uploading data to a peer
-func (pm *PeerManager) OnUpload(pc *pp.PeerConn, bytes int64) {
-	pm.UpdatePeerStats(pc, 0, bytes)
-}
-
-func (pm *PeerManager) OnPeerInterested(pc *pp.PeerConn) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	pc.PeerInterested = true
-
-	if pm.downloadManager.IsFinished() {
-		if pc.PeerChoked {
-			pc.SendUnchoke()
-			log.WithField("peer", pc.RemoteAddr().String()).Info("Unchoked interested peer while seeding")
-		}
-	}
-}
-
-func (pm *PeerManager) OnPeerNotInterested(pc *pp.PeerConn) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	pc.PeerInterested = false
-
-	if !pc.PeerChoked {
-		pc.SendChoke()
-		log.WithField("peer", pc.RemoteAddr().String()).Info("Choked not interested peer")
-	}
-}
-
-func (pm *PeerManager) HandleSeeding() {
-	// Modify the choking algorithm for seeding mode
-	if !pm.downloadManager.IsFinished() {
-		return
-	}
-
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	// Sort peers by upload rate
-	var peerList []*pp.PeerConn
-	for peer := range pm.peers {
-		if peer.PeerInterested {
-			peerList = append(peerList, peer)
-		}
-	}
-
-	sort.Slice(peerList, func(i, j int) bool {
-		statsI := pm.peerStats[peerList[i]]
-		statsJ := pm.peerStats[peerList[j]]
-		return statsI.uploadRate > statsJ.uploadRate
-	})
-
-	// When seeding, we can be more generous with unchoking
-	maxUnchoked := 8 // Allow more concurrent uploads when seeding
-
-	// Unchoke the top uploaders
-	for i, peer := range peerList {
-		if i < maxUnchoked {
-			if peer.PeerChoked {
-				peer.SendUnchoke()
-				log.WithField("peer", peer.RemoteAddr().String()).Info("Unchoked high-performing peer while seeding")
-			}
-		} else {
-			if !peer.PeerChoked {
-				peer.SendChoke()
-			}
-		}
-	}
-}
 
 func init() {
 	// Configure logrus
@@ -273,7 +77,7 @@ func main() {
 	gui.ShowDisclaimer(myApp, myWindow)
 
 	var dm *download.DownloadManager
-	var pm *PeerManager
+	var pm *peer.PeerManager
 	var wg sync.WaitGroup
 	var downloadInProgress bool
 	var downloadCancel context.CancelFunc
@@ -644,7 +448,7 @@ func main() {
 				writer := metainfo.NewWriter(outputPath, info, mode)
 				//dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
-				pm = NewPeerManager(dm)
+				pm = peer.NewPeerManager(dm)
 				progressTicker := time.NewTicker(1 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
@@ -870,7 +674,7 @@ func removeDuplicatePeers(peers [][]byte) [][]byte {
 	return uniquePeers
 }
 
-func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *PeerManager) error {
+func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *peer.PeerManager) error {
 	listenerSession := i2p.GlobalStreamSession
 
 	listener, err := listenerSession.Listen()
@@ -935,22 +739,22 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *
 }
 
 // New function to handle seeding peers
-func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *PeerManager) error {
+func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.PeerManager) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	log.Info("Handling new seeding connection")
 
 	// Add peer to manager
-	pm.mu.Lock()
-	if pm.peers == nil {
-		pm.peers = make(map[*pp.PeerConn]*peer.PeerState)
+	pm.Mu.Lock()
+	if pm.Peers == nil {
+		pm.Peers = make(map[*pp.PeerConn]*peer.PeerState)
 	}
-	pm.peers[pc] = peer.NewPeerState()
-	pm.mu.Unlock()
+	pm.Peers[pc] = peer.NewPeerState()
+	pm.Mu.Unlock()
 
 	defer func() {
-		pm.mu.Lock()
-		delete(pm.peers, pc)
-		pm.mu.Unlock()
+		pm.Mu.Lock()
+		delete(pm.Peers, pc)
+		pm.Mu.Unlock()
 	}()
 
 	// Initially unchoke peer to allow requests
