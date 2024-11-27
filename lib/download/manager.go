@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/downloader"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
@@ -710,13 +711,24 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 		}
 
 		expectedHash := info.Pieces[index]
+
+		fmt.Printf("%s\n", expectedHash.String())
+		fmt.Printf("%s\n", expectedHash.BytesString())
+		fmt.Printf("%s\n", expectedHash.HexString())
+		decodedExpectedHash, err := hex.DecodeString(expectedHash.String())
+		if err != nil {
+			log.WithError(err).Error("Failed to decode expected hash")
+			return false
+		}
+
 		actualHash := sha1.Sum(completeData)
 
 		if !bytes.Equal(expectedHash[:], actualHash[:]) {
 			log.WithFields(logrus.Fields{
-				"piece_index":   index,
-				"expected_hash": fmt.Sprintf("%x", expectedHash),
-				"actual_hash":   fmt.Sprintf("%x", actualHash),
+				"piece_index":         index,
+				"decodedExpectedHash": fmt.Sprintf("%x", decodedExpectedHash),
+				"expected_hash":       fmt.Sprintf("%x", expectedHash),
+				"actual_hash":         fmt.Sprintf("%x", actualHash),
 			}).Panic("Piece hash mismatch (memory verification)")
 			return false
 		}
