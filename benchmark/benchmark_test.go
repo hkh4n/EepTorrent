@@ -43,7 +43,7 @@ import (
 
 var log = logrus.StandardLogger()
 
-func TestBench1MB(t *testing.T) {
+func TestBench1KB(t *testing.T) {
 	//log.SetFlags(log.LstdFlags | log.Lshortfile)
 	//log.SetOutput(os.Stdout)
 	log.SetLevel(logrus.DebugLevel)
@@ -66,13 +66,13 @@ func TestBench1MB(t *testing.T) {
 		os.Exit(0)
 	}()
 
-	log.Println("Starting Bench1MB test")
+	log.Println("Starting Bench1KB test")
 
 	err := i2p.InitSAM(i2p.DefaultSAMConfig())
 	assert.NoError(t, err, "Failed to initialize SAM")
 	defer i2p.CloseSAM()
 
-	torrentPath := filepath.Join("testdata", "test_1mb.txt.torrent")
+	torrentPath := filepath.Join("testdata", "test_1kb.txt.torrent")
 	mi, err := metainfo.LoadFromFile(torrentPath)
 	assert.NoError(t, err, "Failed to load test torrent")
 
