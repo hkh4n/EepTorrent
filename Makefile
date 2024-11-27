@@ -7,10 +7,12 @@ GOGET=$(GOCMD) get
 
 # Binary names
 BINARY_NAME=EepTorrent
+TOOLS_BINARY=EepTorrent-tools
 ANDROID_PACKAGE=com.i2p.eeptorrent
 
 # Build directory
 BUILD_DIR=bin
+TOOLS_MAIN=cmd/tools/main.go
 
 # Main packages
 MAIN=main.go
@@ -34,6 +36,10 @@ MIN_SDK_VERSION=21
 .PHONY: all build build-linux-amd64 build-android build-android-arm64 build-android-arm build-android-amd64 check-android clean test run install uninstall
 
 all: test build
+
+build-tools:
+	mkdir -p $(BUILD_DIR)
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(TOOLS_BINARY) -v $(TOOLS_MAIN)
 
 build:
 	mkdir -p $(BUILD_DIR)
