@@ -8,11 +8,13 @@ GOGET=$(GOCMD) get
 # Binary names
 BINARY_NAME=EepTorrent
 TOOLS_BINARY=EepTorrent-tools
+ANACROLIX_BINARY=anacrolix-analyze
 ANDROID_PACKAGE=com.i2p.eeptorrent
 
 # Build directory
 BUILD_DIR=bin
 TOOLS_MAIN=cmd/tools/main.go
+ANACROLIX_ANALYZE_MAIN=cmd/anacrolix/main.go
 
 # Main packages
 MAIN=main.go
@@ -40,6 +42,7 @@ all: test build
 build-tools:
 	mkdir -p $(BUILD_DIR)
 	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(TOOLS_BINARY) -v $(TOOLS_MAIN)
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(ANACROLIX_BINARY) -v $(ANACROLIX_ANALYZE_MAIN)
 
 build:
 	mkdir -p $(BUILD_DIR)
