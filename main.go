@@ -39,10 +39,12 @@ import (
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-i2p/go-i2p-bt/metainfo"
@@ -69,6 +71,23 @@ func init() {
 }
 
 func main() {
+	// Set up panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Recovered from panic: %v", r)
+			i2p.Cleanup()
+			os.Exit(1)
+		}
+	}()
+	// Set up signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		log.Info("Received interrupt signal")
+		i2p.Cleanup()
+		os.Exit(0)
+	}()
 	myApp := app.NewWithID("com.i2p.EepTorrent")
 	myApp.SetIcon(logo.ResourceLogo32Png)
 

@@ -27,21 +27,45 @@ import (
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"io/ioutil"
-	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
 
+var log = logrus.StandardLogger()
+
 func TestBench1MB(t *testing.T) {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.SetOutput(os.Stdout)
+	//log.SetFlags(log.LstdFlags | log.Lshortfile)
+	//log.SetOutput(os.Stdout)
+	log.SetLevel(logrus.DebugLevel)
+
+	// Set up panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Recovered from panic: %v", r)
+			i2p.Cleanup()
+			os.Exit(1)
+		}
+	}()
+	// Set up signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		log.Info("Received interrupt signal")
+		i2p.Cleanup()
+		os.Exit(0)
+	}()
+
 	log.Println("Starting Bench1MB test")
 
 	err := i2p.InitSAM(i2p.DefaultSAMConfig())

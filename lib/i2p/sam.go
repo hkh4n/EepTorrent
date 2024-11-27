@@ -107,3 +107,9 @@ func CloseSAM() {
 		GlobalSAM.Close()
 	}
 }
+
+func Cleanup() {
+	fmt.Println("Performing cleanup...")
+	CloseSAM()
+	fmt.Println("SAM session closed")
+}
