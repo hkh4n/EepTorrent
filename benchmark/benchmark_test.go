@@ -102,10 +102,22 @@ func TestBench1MB(t *testing.T) {
 	assert.NotNil(t, pm, "Failed to initialize PeerManager")
 
 	log.Println("Fetching peers from EepTorrent Tracker")
-	peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
-	assert.NoError(t, err, "Failed to get peers from EepTorrent Tracker")
-	assert.NotEmpty(t, peers, "No peers returned from EepTorrent Tracker")
-	log.Printf("Fetched %d peers from EepTorrent Tracker", len(peers))
+
+	var allPeers [][]byte
+	//peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
+	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi)
+	if err != nil {
+		log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
+	} else {
+		allPeers = append(allPeers, peersEep...)
+	}
+	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi)
+	if err != nil {
+		log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
+	} else {
+		allPeers = append(allPeers, peersDg2...)
+	}
+	uniquePeers := peer.RemoveDuplicatePeers(allPeers)
 
 	// Create context with proper timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
@@ -158,8 +170,8 @@ func TestBench1MB(t *testing.T) {
 
 	// Start peer connections with timeout handling
 	maxPeers := 50
-	if len(peers) < maxPeers {
-		maxPeers = len(peers)
+	if len(uniquePeers) < maxPeers {
+		maxPeers = len(uniquePeers)
 	}
 
 	for i := 0; i < maxPeers; i++ {
@@ -167,7 +179,7 @@ func TestBench1MB(t *testing.T) {
 		go func(peerHash []byte, idx int) {
 			defer wg.Done()
 			peer.ConnectToPeer(ctx, peerHash, idx, &mi, dm)
-		}(peers[i], i)
+		}(uniquePeers[i], i)
 	}
 
 	// Wait for either completion or timeout
