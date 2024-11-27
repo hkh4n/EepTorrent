@@ -304,3 +304,17 @@ func PerformHandshake(conn net.Conn, infoHash []byte, peerId string) error {
 	log.Debug("Handshake completed successfully")
 	return nil
 }
+
+func RemoveDuplicatePeers(peers [][]byte) [][]byte {
+	peerSet := make(map[string]struct{})
+	uniquePeers := make([][]byte, 0, len(peers))
+
+	for _, peer := range peers {
+		peerStr := string(peer)
+		if _, exists := peerSet[peerStr]; !exists {
+			peerSet[peerStr] = struct{}{}
+			uniquePeers = append(uniquePeers, peer)
+		}
+	}
+	return uniquePeers
+}

@@ -581,7 +581,7 @@ func main() {
 					gui.ShowError("Failed to get peers from any tracker", fmt.Errorf("No peers found"), myWindow)
 					return
 				}
-				uniquePeers := removeDuplicatePeers(allPeers)
+				uniquePeers := peer.RemoveDuplicatePeers(allPeers)
 
 				// Limit the number of connections based on user settings
 				maxPeers := maxConnections
@@ -677,20 +677,6 @@ func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.
 	}
 
 	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
-}
-
-func removeDuplicatePeers(peers [][]byte) [][]byte {
-	peerSet := make(map[string]struct{})
-	uniquePeers := make([][]byte, 0, len(peers))
-
-	for _, peer := range peers {
-		peerStr := string(peer)
-		if _, exists := peerSet[peerStr]; !exists {
-			peerSet[peerStr] = struct{}{}
-			uniquePeers = append(uniquePeers, peer)
-		}
-	}
-	return uniquePeers
 }
 
 func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *peer.PeerManager) error {
