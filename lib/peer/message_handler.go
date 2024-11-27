@@ -319,9 +319,17 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 		length := BlockSize
 
 		// Adjust length for the last block in the piece
-		info := dm.Writer.Info()
-		if int64(offset)+int64(length) > info.PieceLength {
-			length = int(info.PieceLength - int64(offset))
+		// Get the actual piece length
+		pieceLength := dm.GetPieceLength(pieceIndex)
+
+		// Adjust length for the last block in the piece
+		if int64(offset)+int64(length) > pieceLength {
+			length = int(pieceLength - int64(offset))
+		}
+
+		// For small pieces, adjust length if the piece is smaller than BlockSize
+		if pieceLength < int64(length) {
+			length = int(pieceLength)
 		}
 
 		log.WithFields(logrus.Fields{
