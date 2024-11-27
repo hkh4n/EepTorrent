@@ -717,7 +717,7 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 				"piece_index":   index,
 				"expected_hash": fmt.Sprintf("%x", expectedHash),
 				"actual_hash":   fmt.Sprintf("%x", actualHash),
-			}).Error("Piece hash mismatch (memory verification)")
+			}).Panic("Piece hash mismatch (memory verification)")
 			return false
 		}
 		return true
@@ -738,7 +738,7 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 			"piece_index":   index,
 			"expected_hash": fmt.Sprintf("%x", expectedHash),
 			"actual_hash":   fmt.Sprintf("%x", actualHash),
-		}).Error("Piece hash mismatch (disk verification)")
+		}).Panic("Piece hash mismatch (disk verification)")
 		return false
 	}
 
