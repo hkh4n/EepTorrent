@@ -103,15 +103,17 @@ func TestBench1KB(t *testing.T) {
 
 	log.Println("Fetching peers from EepTorrent Tracker")
 
+	timeout := time.Second * 15
+
 	var allPeers [][]byte
 	//peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
-	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi)
+	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
 	} else {
 		allPeers = append(allPeers, peersEep...)
 	}
-	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi)
+	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
 	} else {
@@ -333,15 +335,17 @@ func TestBench1MB(t *testing.T) {
 
 	log.Println("Fetching peers from EepTorrent Tracker")
 
+	timeout := time.Second * 15
+
 	var allPeers [][]byte
 	//peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
-	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi)
+	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
 	} else {
 		allPeers = append(allPeers, peersEep...)
 	}
-	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi)
+	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
 	} else {
