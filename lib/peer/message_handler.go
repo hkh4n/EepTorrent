@@ -22,12 +22,13 @@ import (
 	"eeptorrent/lib/download"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/bencode"
+	"github.com/go-i2p/go-i2p-bt/downloader"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
 	"sync/atomic"
 )
 
-const BlockSize = 16384 // 16KB blocks
+const BlockSize = downloader.BlockSize // 16KB blocks
 
 func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager, ps *PeerState) error {
 	log := log.WithFields(logrus.Fields{
