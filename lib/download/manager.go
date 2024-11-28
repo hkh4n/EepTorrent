@@ -44,7 +44,6 @@ type PieceStatus struct {
 	Blocks      []bool   // true if block is received
 	BlockData   [][]byte // Store block data until piece complete
 	Completed   bool
-	Peers       []*pp.PeerConn
 	Mu          sync.Mutex
 }
 
@@ -860,7 +859,7 @@ func (dm *DownloadManager) BroadcastHave(index uint32) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
 
-	for _, peer := range dm.Pieces[index].Peers {
+	for _, peer := range dm.Peers {
 		err := peer.SendHave(index)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{

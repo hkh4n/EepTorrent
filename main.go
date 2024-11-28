@@ -743,7 +743,8 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *
 	}
 }
 
-// New function to handle seeding peers
+// handleSeedingPeer manages an incoming seeding peer connection.
+// It handles requests for pieces, manages upload interactions, and ensures robust error handling.
 func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.PeerManager) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	log.Info("Handling new seeding connection")
@@ -765,12 +766,14 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 	// Initially unchoke peer to allow requests
 	err := pc.SendUnchoke()
 	if err != nil {
+		log.WithError(err).Error("Failed to send unchoke to peer")
 		return fmt.Errorf("failed to send unchoke: %v", err)
 	}
 
 	// Send our bitfield so they know what pieces we have
 	err = pc.SendBitfield(dm.Bitfield)
 	if err != nil {
+		log.WithError(err).Error("Failed to send bitfield to peer")
 		return fmt.Errorf("failed to send bitfield: %v", err)
 	}
 
@@ -778,6 +781,11 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 	for {
 		msg, err := pc.ReadMsg()
 		if err != nil {
+			if err.Error() == "EOF" {
+				log.Info("Peer closed the connection")
+			} else {
+				log.WithError(err).Error("Failed to read message from peer")
+			}
 			return fmt.Errorf("failed to read message: %v", err)
 		}
 
@@ -789,56 +797,65 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 					"index":  msg.Index,
 					"begin":  msg.Begin,
 					"length": msg.Length,
-				}).Error("Invalid piece request")
+				}).Warn("Received invalid piece request")
 				continue
 			}
 
 			// Get the requested block
 			blockData, err := dm.GetBlock(msg.Index, msg.Begin, msg.Length)
 			if err != nil {
-				log.WithError(err).Error("Failed to get requested block")
+				log.WithError(err).Error("Failed to retrieve requested block")
+				// Optionally, send an error message to the peer or choke the peer
 				continue
 			}
 
 			// Send the piece
 			err = pc.SendPiece(msg.Index, msg.Begin, blockData)
 			if err != nil {
-				log.WithError(err).Error("Failed to send piece")
+				log.WithError(err).Error("Failed to send piece to peer")
+				// Optionally, handle the error, e.g., by chocking the peer
 				continue
 			}
 
 			// Update upload stats
 			uploadSize := int64(len(blockData))
 			atomic.AddInt64(&dm.Uploaded, uploadSize)
-			pm.OnUpload(pc, uploadSize)
+			pm.UpdatePeerStats(pc, 0, uploadSize) // Update upload stats in PeerManager
 
 			log.WithFields(logrus.Fields{
 				"index": msg.Index,
 				"begin": msg.Begin,
 				"size":  len(blockData),
-			}).Debug("Successfully sent piece")
+			}).Debug("Successfully sent piece to peer")
 
 		case pp.MTypeInterested:
 			pm.OnPeerInterested(pc)
-			log.Debug("Peer became interested")
+			log.Debug("Peer expressed interest in downloading")
 
 		case pp.MTypeNotInterested:
 			pm.OnPeerNotInterested(pc)
-			log.Debug("Peer became not interested")
+			log.Debug("Peer expressed lack of interest in downloading")
 
 		case pp.MTypeHave:
 			// Update peer's bitfield
 			if int(msg.Index) < len(pc.BitField) {
 				pc.BitField.Set(msg.Index)
+				log.WithField("piece_index", msg.Index).Debug("Updated peer's bitfield with new piece")
+			} else {
+				log.WithField("piece_index", msg.Index).Warn("Received 'Have' for invalid piece index")
 			}
 
 		case pp.MTypeBitField:
 			pc.BitField = msg.BitField
-			log.WithField("pieces", pc.BitField.String()).Debug("Received peer bitfield")
+			log.WithField("pieces", pc.BitField.String()).Debug("Received peer's bitfield")
 
 		case pp.MTypeCancel:
-			// Simply ignore cancel requests while seeding
-			log.Debug("Ignored cancel request")
+			// Optionally handle cancel requests if needed
+			log.Debug("Received 'Cancel' message from peer (ignored in seeding)")
+
+		default:
+			// Log unhandled message types at debug level
+			log.WithField("message_type", msg.Type.String()).Debug("Received unhandled message type from peer")
 		}
 	}
 }
