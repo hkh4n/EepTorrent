@@ -7,6 +7,7 @@ import (
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"net"
 	"os"
 	"sync"
 	"testing"
@@ -286,35 +287,77 @@ func TestConcurrentAccess(t *testing.T) {
 	// No race conditions should occur
 }
 
+type MockConn struct {
+	net.Conn
+	addr net.Addr
+}
+
+func (m *MockConn) RemoteAddr() net.Addr {
+	return m.addr
+}
+
 func TestPeerInteractions(t *testing.T) {
 	dm, _, tempDir := setupTestDownloadManager(t)
 	defer os.RemoveAll(tempDir)
 
-	// Create mock peer connection
-	peerBitfield := pp.NewBitField(4)
+	// Calculate the correct number of bytes needed (should round up)
+	numBytes := (4 + 7) / 8 // (bits + 7) / 8 rounds up to nearest byte
+
+	// Create mock peer connection with correct size bitfield
+	peerBitfield := pp.NewBitField(numBytes * 8) // Size in bits
 	peerBitfield.Set(0)
 	peerBitfield.Set(2)
 
-	peer := &pp.PeerConn{
-		BitField: peerBitfield,
+	mockAddr := &net.TCPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 6881,
 	}
 
-	// Test if we need pieces from the peer
-	assert.True(t, dm.NeedPiecesFrom(peer))
+	mockConn := &MockConn{
+		addr: mockAddr,
+	}
 
-	// Mark piece 0 as complete in our bitfield
+	peer := &pp.PeerConn{
+		BitField: peerBitfield,
+		Conn:     mockConn,
+	}
+
+	// Initial state verification
+	t.Logf("Initial state:")
+	for i := 0; i < dm.TotalPieces; i++ {
+		t.Logf("Piece %d - We have: %v, Peer has: %v",
+			i, dm.Bitfield.IsSet(uint32(i)), peer.BitField.IsSet(uint32(i)))
+	}
+
+	// Initial check
+	result := dm.NeedPiecesFrom(peer)
+	t.Logf("Initial check (should be true): %v", result)
+	assert.True(t, result, "Should need pieces from peer (has pieces 0,2, we have none)")
+
+	// Mark piece 0 as complete
 	dm.Bitfield.Set(0)
+	t.Logf("\nAfter setting piece 0:")
+	for i := 0; i < dm.TotalPieces; i++ {
+		t.Logf("Piece %d - We have: %v, Peer has: %v",
+			i, dm.Bitfield.IsSet(uint32(i)), peer.BitField.IsSet(uint32(i)))
+	}
 
-	// We should still need pieces (piece 2)
-	assert.True(t, dm.NeedPiecesFrom(peer))
+	result = dm.NeedPiecesFrom(peer)
+	t.Logf("After setting piece 0 (should be true): %v", result)
+	assert.True(t, result, "Should still need piece 2 from peer")
 
 	// Mark piece 2 as complete
 	dm.Bitfield.Set(2)
+	t.Logf("\nAfter setting piece 2:")
+	for i := 0; i < dm.TotalPieces; i++ {
+		t.Logf("Piece %d - We have: %v, Peer has: %v",
+			i, dm.Bitfield.IsSet(uint32(i)), peer.BitField.IsSet(uint32(i)))
+	}
 
-	// Now we shouldn't need any more pieces from this peer
-	assert.False(t, dm.NeedPiecesFrom(peer))
+	result = dm.NeedPiecesFrom(peer)
+	t.Logf("After setting piece 2 (should be false): %v", result)
+	assert.False(t, result, "Should not need any more pieces from peer")
 }
-
 func TestIsFinished(t *testing.T) {
 	dm, _, tempDir := setupTestDownloadManager(t)
 	defer os.RemoveAll(tempDir)

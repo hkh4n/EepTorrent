@@ -304,11 +304,10 @@ func (dm *DownloadManager) isPieceComplete(piece *PieceStatus) bool {
 	}
 	return true
 }
+
 func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
-	log := log.WithField("peer", pc.RemoteAddr().String())
-	log.Debug("Checking if we need pieces from this peer")
 
 	peerPieces := len(pc.BitField)
 	totalPieces := len(dm.Bitfield)
@@ -317,16 +316,33 @@ func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 		"totalPieces": totalPieces,
 	}).Debug("Piece details")
 
-	for i := 0; i < len(dm.Bitfield); i++ { //dm.Bitfield.Length() -> len(dm.Bitfield)
+	logFields := logrus.Fields{}
+	if pc.RemoteAddr() != nil {
+		logFields["peer"] = pc.RemoteAddr().String()
+	}
+	log := log.WithFields(logFields)
+	log.Debug("Checking if we need pieces from this peer")
+
+	if pc.BitField == nil {
+		log.Debug("Peer has no bitfield")
+		return false
+	}
+
+	// Add debug logging for every piece
+	for i := 0; i < dm.TotalPieces; i++ {
+		log.WithFields(logrus.Fields{
+			"piece_index":    i,
+			"we_have_piece":  dm.Bitfield.IsSet(uint32(i)),
+			"peer_has_piece": pc.BitField.IsSet(uint32(i)),
+		}).Debug("Checking piece")
+
+		// Key change: If we don't have a piece but peer does, we need something from them
 		if !dm.Bitfield.IsSet(uint32(i)) && pc.BitField.IsSet(uint32(i)) {
-			log.WithFields(logrus.Fields{
-				"piece_index":    i,
-				"have_piece":     dm.Bitfield.IsSet(uint32(i)),
-				"peer_has_piece": pc.BitField.IsSet(uint32(i)),
-			}).Debug("Found needed piece from peer")
+			log.WithField("needed_piece", i).Debug("Found needed piece from peer")
 			return true
 		}
 	}
+
 	log.Debug("No needed pieces from this peer")
 	return false
 }
