@@ -76,6 +76,7 @@ type BlockInfo struct {
 	Length     uint32
 }
 
+// NewDownloadManager initializes a new DownloadManager with accurate block calculations.
 func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength int64, totalPieces int, downloadDir string) *DownloadManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	log.WithFields(logrus.Fields{
@@ -94,7 +95,13 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		} else {
 			pieceSize = pieceLength
 		}
-		blocks := uint32((pieceSize + int64(downloader.BlockSize) - 1) / int64(downloader.BlockSize))
+
+		// Correct block calculation
+		blocks := uint32(pieceSize / int64(downloader.BlockSize))
+		if pieceSize%int64(downloader.BlockSize) != 0 {
+			blocks++
+		}
+
 		pieces[i] = &PieceStatus{
 			Index:       uint32(i),
 			TotalBlocks: blocks,
@@ -102,19 +109,27 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 			BlockData:   make([][]byte, blocks),
 			Completed:   false,
 		}
+
+		log.WithFields(logrus.Fields{
+			"piece_index": i,
+			"piece_size":  pieceSize,
+			"block_count": blocks,
+			"block_size":  downloader.BlockSize,
+		}).Debug("Initialized piece")
 	}
+
 	return &DownloadManager{
 		Writer:          writer,
 		Pieces:          pieces,
 		Bitfield:        pp.NewBitField(totalPieces),
-		TotalPieces:     totalPieces, // <-- Initialize the field
+		TotalPieces:     totalPieces,
 		Downloaded:      0,
 		Uploaded:        0,
 		Left:            totalLength,
 		CurrentPiece:    0,
 		CurrentOffset:   0,
-		RequestedBlocks: make(map[uint32]map[uint32]bool), // Initialize RequestedBlocks
-		Peers:           make([]*pp.PeerConn, 0),          // Initialize Peers
+		RequestedBlocks: make(map[uint32]map[uint32]bool),
+		Peers:           make([]*pp.PeerConn, 0),
 		DownloadDir:     downloadDir,
 		ctx:             ctx,
 		cancelFunc:      cancel,
@@ -246,9 +261,8 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		"length": len(b),
 	}).Debug("OnBlock called")
 
-	// Validate block size
+	// Validate piece length
 	info := dm.Writer.Info()
-	// Get actual piece length
 	pieceLength := dm.GetPieceLength(index)
 
 	log.WithFields(logrus.Fields{
@@ -355,6 +369,11 @@ func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
 		"piece_index": index,
 		"block_num":   blockNum,
 	}).Debug("Marked block as received")
+
+	// Log the current state of blocks
+	log.WithFields(logrus.Fields{
+		"blocks_received": piece.Blocks,
+	}).Debug("Current blocks_received status")
 
 	// Check if the piece is completed.
 	if !piece.Completed && dm.isPieceComplete(piece) {
@@ -818,6 +837,8 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 		}
 
 		actualHash := sha1.Sum(completeData)
+		doubleData := append(completeData, completeData...)
+		doubleHash := sha1.Sum(doubleData)
 
 		if !bytes.Equal(expectedHash[:], actualHash[:]) {
 			log.WithFields(logrus.Fields{
@@ -825,6 +846,7 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 				"decodedExpectedHash": fmt.Sprintf("%x", decodedExpectedHash),
 				"expected_hash":       fmt.Sprintf("%x", expectedHash),
 				"actual_hash":         fmt.Sprintf("%x", actualHash),
+				"doubleHash":          fmt.Sprintf("%x", doubleHash),
 			}).Panic("Piece hash mismatch (memory verification)")
 			return false
 		}
