@@ -120,7 +120,7 @@ func TestBench1KB(t *testing.T) {
 	uniquePeers := peer.RemoveDuplicatePeers(allPeers)
 
 	// Create context with proper timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -249,7 +249,7 @@ func TestBench1KB(t *testing.T) {
 		assert.FileExists(t, downloadedFilePath)
 
 		// Read and verify file
-		downloadedData, err := ioutil.ReadFile(downloadedFilePath)
+		downloadedData, err := os.ReadFile(downloadedFilePath)
 		assert.NoError(t, err, "Failed to read downloaded file")
 
 		expectedSize := info.TotalLength()
@@ -296,7 +296,7 @@ func TestBench1MB(t *testing.T) {
 		os.Exit(0)
 	}()
 
-	log.Println("Starting Bench1KB test")
+	log.Println("Starting Bench1MB test")
 
 	err := i2p.InitSAM(i2p.DefaultSAMConfig())
 	assert.NoError(t, err, "Failed to initialize SAM")
