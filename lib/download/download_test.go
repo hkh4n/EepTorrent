@@ -126,49 +126,103 @@ func TestOnBlock(t *testing.T) {
 		blockData[i] = byte(i % 256)
 	}
 
-	err := dm.OnBlock(0, 0, blockData)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(len(blockData)), dm.Downloaded)
+	t.Run("Valid block", func(t *testing.T) {
+		err := dm.OnBlock(0, 0, blockData)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(len(blockData)), dm.Downloaded)
+	})
 
-	// Test receiving duplicate block
-	err = dm.OnBlock(0, 0, blockData)
-	assert.NoError(t, err)
+	t.Run("Duplicate block", func(t *testing.T) {
+		err := dm.OnBlock(0, 0, blockData)
+		assert.NoError(t, err) // Duplicate blocks should be ignored gracefully
+	})
 
-	// Test invalid piece index
-	err = dm.OnBlock(999, 0, blockData)
-	assert.Error(t, err)
+	t.Run("Invalid piece index - too large", func(t *testing.T) {
+		err := dm.OnBlock(999, 0, blockData)
+		assert.Error(t, err)
+	})
+
+	t.Run("Invalid piece index - at boundary", func(t *testing.T) {
+		// Test the last valid piece index
+		lastValidIndex := uint32(dm.TotalPieces - 1)
+		err := dm.OnBlock(lastValidIndex, 0, blockData)
+		assert.NoError(t, err, "Last valid piece index should work")
+
+		// Test the first invalid piece index
+		firstInvalidIndex := uint32(dm.TotalPieces)
+		err = dm.OnBlock(firstInvalidIndex, 0, blockData)
+		assert.Error(t, err, "First invalid piece index should fail")
+	})
+
+	t.Run("Invalid block number", func(t *testing.T) {
+		invalidOffset := uint32(dm.Writer.Info().PieceLength)
+		err := dm.OnBlock(0, invalidOffset, blockData)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid block number")
+	})
+
+	t.Run("Nil block data", func(t *testing.T) {
+		err := dm.OnBlock(0, 0, nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("Block too large", func(t *testing.T) {
+		largeBlock := make([]byte, dm.Writer.Info().PieceLength+1)
+		err := dm.OnBlock(0, 0, largeBlock)
+		assert.Error(t, err)
+	})
 }
 
 func TestPieceVerification(t *testing.T) {
 	dm, _, tempDir := setupTestDownloadManager(t)
 	defer os.RemoveAll(tempDir)
 
-	// Create test piece data
-	pieceSize := dm.Writer.Info().PieceLength
-	pieceData := make([]byte, pieceSize)
-	for i := range pieceData {
-		pieceData[i] = byte(i % 256)
-	}
+	t.Run("Complete valid piece", func(t *testing.T) {
+		// Fill up a piece with blocks
+		pieceIndex := uint32(0)
+		blockSize := uint32(downloader.BlockSize)
+		pieceLength := dm.Writer.Info().PieceLength
 
-	// Split into blocks
-	blockSize := downloader.BlockSize
-	numBlocks := (pieceSize + int64(blockSize) - 1) / int64(blockSize)
+		for offset := uint32(0); offset < uint32(pieceLength); offset += blockSize {
+			remainingBytes := uint32(pieceLength) - offset
+			currentBlockSize := blockSize
+			if remainingBytes < blockSize {
+				currentBlockSize = remainingBytes
+			}
 
-	// Add blocks to piece
-	for i := 0; i < int(numBlocks); i++ {
-		start := i * blockSize
-		end := start + blockSize
-		if end > int(pieceSize) {
-			end = int(pieceSize)
+			blockData := make([]byte, currentBlockSize)
+			for i := range blockData {
+				blockData[i] = byte(i % 256)
+			}
+
+			err := dm.OnBlock(pieceIndex, offset, blockData)
+			assert.NoError(t, err)
 		}
 
-		blockData := pieceData[start:end]
-		err := dm.OnBlock(0, uint32(start), blockData)
-		assert.NoError(t, err)
-	}
+		// Verify the piece
+		piece := dm.Pieces[pieceIndex]
+		piece.Mu.Lock()
+		isComplete := dm.isPieceComplete(piece)
+		piece.Mu.Unlock()
 
-	// Verify the piece
-	assert.True(t, dm.VerifyPiece(0))
+		assert.True(t, isComplete)
+	})
+
+	t.Run("Incomplete piece", func(t *testing.T) {
+		pieceIndex := uint32(1)
+
+		// Add just one block, leaving the piece incomplete
+		blockData := make([]byte, downloader.BlockSize)
+		err := dm.OnBlock(pieceIndex, 0, blockData)
+		assert.NoError(t, err)
+
+		piece := dm.Pieces[pieceIndex]
+		piece.Mu.Lock()
+		isComplete := dm.isPieceComplete(piece)
+		piece.Mu.Unlock()
+
+		assert.False(t, isComplete)
+	})
 }
 
 func TestProgress(t *testing.T) {
