@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import (
 	"bytes"
+	"context"
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/util"
 	"fmt"
@@ -27,9 +28,11 @@ import (
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	"github.com/sirupsen/logrus"
 	"io"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var log = logrus.StandardLogger()
@@ -42,8 +45,8 @@ type TrackerConfig struct {
 	Path        string // Announce path, e.g., "/a" or "/announce.php"
 }
 
-func getPeersFromTracker(tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, error) {
-	log.Infof("getting peers from %s tracker", tc.Name)
+func getPeersFromTracker(ctx context.Context, tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, error) {
+	log.Infof("Getting peers from %s tracker", tc.Name)
 	sam := i2p.GlobalSAM
 	keys := i2p.GlobalKeys
 	stream := i2p.GlobalStreamSession
@@ -52,18 +55,22 @@ func getPeersFromTracker(tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, err
 		log.WithError(err).Errorf("Failed to lookup %s tracker address", tc.Name)
 		return nil, err
 	}
+
 	info, err := mi.Info()
 	if err != nil {
 		log.WithError(err).Error("Failed to parse metainfo")
 		return nil, err
 	}
+
 	totalLength := info.TotalLength()
 	ihEnc := mi.InfoHash().Bytes()
 	pidEnc := util.GeneratePeerId()
+
 	log.WithFields(logrus.Fields{
 		"info_hash": fmt.Sprintf("%x", ihEnc),
 		"peer_id":   pidEnc,
 	}).Debug("Preparing tracker request")
+
 	query := url.Values{}
 	query.Set("info_hash", string(ihEnc))
 	query.Set("peer_id", pidEnc)
@@ -76,83 +83,123 @@ func getPeersFromTracker(tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, err
 	destination += ".i2p"
 	query.Set("ip", destination)
 	query.Set("event", "started")
+
 	announcePath := fmt.Sprintf("/%s?%s", tc.Path, query.Encode())
 	httpRequest := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", announcePath, addr.Base32(), USER_AGENT)
 
 	log.WithField("request", httpRequest).Debug("Sending tracker request")
 
-	conn, err := stream.Dial("tcp", addr.String())
-	if err != nil {
-		log.WithError(err).Error("Failed to connect to tracker")
-		return nil, err
-	}
-	defer conn.Close()
-	// Send the HTTP request
-	_, err = conn.Write([]byte(httpRequest))
-	if err != nil {
-		log.WithError(err).Error("Failed to send request to tracker")
-		return nil, err
-	}
-	var responseBuffer bytes.Buffer
-	buffer := make([]byte, 4096)
+	// Establish a channel to receive the connection or error
+	connCh := make(chan net.Conn, 1)
+	errCh := make(chan error, 1)
 
-	// Read until no more data or error
-	for {
-		n, err := conn.Read(buffer)
+	go func() {
+		conn, err := stream.Dial("tcp", addr.String())
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.WithError(err).Error("Error reading tracker response")
+			errCh <- err
+			return
+		}
+		connCh <- conn
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Errorf("Tracker connection to %s timed out", tc.Name)
+		return nil, fmt.Errorf("tracker connection to %s timed out", tc.Name)
+	case err := <-errCh:
+		log.WithError(err).Errorf("Failed to connect to %s tracker", tc.Name)
+		return nil, err
+	case conn := <-connCh:
+		defer conn.Close()
+
+		// Set a deadline for the entire request based on context
+		if deadline, ok := ctx.Deadline(); ok {
+			conn.SetDeadline(deadline)
+		} else {
+			// Set a default timeout if context has no deadline
+			conn.SetDeadline(time.Now().Add(30 * time.Second))
+		}
+
+		// Send the HTTP request
+		_, err = conn.Write([]byte(httpRequest))
+		if err != nil {
+			log.WithError(err).Error("Failed to send request to tracker")
 			return nil, err
 		}
-		responseBuffer.Write(buffer[:n])
-	}
-	response := responseBuffer.String()
-	log.WithField("response", response).Debug("Received tracker response")
-	headerEnd := strings.Index(response, "\r\n\r\n")
-	if headerEnd == -1 {
-		log.Error("Invalid HTTP response: no header-body separator found")
-		return nil, fmt.Errorf("Invalid HTTP response: no header-body separator found")
-	}
-	body := response[headerEnd+4:]
-	var trackerResp map[string]interface{}
-	err = bencode.DecodeBytes([]byte(body), &trackerResp)
-	if err != nil {
-		log.WithError(err).Error("Failed to parse tracker response")
-		return nil, fmt.Errorf("Failed to parse tracker response: %v", err)
-	}
-	// Extract 'peers' key
-	peersValue, ok := trackerResp["peers"]
-	if !ok {
-		log.Error("No 'peers' key in tracker response")
-		return nil, fmt.Errorf("No 'peers' key in tracker response")
-	}
 
-	// Handle compact peers
-	peersStr, ok := peersValue.(string)
-	if !ok {
-		log.Error("'peers' is not a string")
-		return nil, fmt.Errorf("'peers' is not a string")
-	}
+		var responseBuffer bytes.Buffer
+		buffer := make([]byte, 4096)
 
-	peersBytes := []byte(peersStr)
+	outerLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				log.Errorf("Reading from tracker %s timed out", tc.Name)
+				return nil, fmt.Errorf("reading from tracker %s timed out", tc.Name)
+			default:
+				conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // Adjust read timeout as needed
+				n, err := conn.Read(buffer)
+				if err != nil {
+					if err == io.EOF {
+						break outerLoop // Exit the for loop
+					}
+					log.WithError(err).Error("Error reading tracker response")
+					return nil, err
+				}
+				responseBuffer.Write(buffer[:n])
+			}
+		}
 
-	if len(peersBytes)%32 != 0 {
-		log.WithField("length", len(peersBytes)).Error("Peers string length is not a multiple of 32")
-		return nil, fmt.Errorf("Peers string length is not a multiple of 32")
-	}
+		// This code is now reachable
+		response := responseBuffer.String()
+		log.WithField("response", response).Debug("Received tracker response")
+		headerEnd := strings.Index(response, "\r\n\r\n")
+		if headerEnd == -1 {
+			log.Error("Invalid HTTP response: no header-body separator found")
+			return nil, fmt.Errorf("invalid HTTP response: no header-body separator found")
+		}
+		body := response[headerEnd+4:]
+		var trackerResp map[string]interface{}
+		err = bencode.DecodeBytes([]byte(body), &trackerResp)
+		if err != nil {
+			log.WithError(err).Error("Failed to parse tracker response")
+			return nil, fmt.Errorf("failed to parse tracker response: %v", err)
+		}
 
-	peerHashes := [][]byte{}
-	for i := 0; i < len(peersBytes); i += 32 {
-		peerHash := peersBytes[i : i+32]
-		peerHashes = append(peerHashes, peerHash)
+		// Extract 'peers' key
+		peersValue, ok := trackerResp["peers"]
+		if !ok {
+			log.Error("No 'peers' key in tracker response")
+			return nil, fmt.Errorf("no 'peers' key in tracker response")
+		}
+
+		// Handle compact peers
+		peersStr, ok := peersValue.(string)
+		if !ok {
+			log.Error("'peers' is not a string")
+			return nil, fmt.Errorf("'peers' is not a string")
+		}
+
+		peersBytes := []byte(peersStr)
+
+		if len(peersBytes)%32 != 0 {
+			log.WithField("length", len(peersBytes)).Error("Peers string length is not a multiple of 32")
+			return nil, fmt.Errorf("peers string length is not a multiple of 32")
+		}
+
+		peerHashes := [][]byte{}
+		for i := 0; i < len(peersBytes); i += 32 {
+			peerHash := peersBytes[i : i+32]
+			peerHashes = append(peerHashes, peerHash)
+		}
+		log.WithField("peer_count", len(peerHashes)).Info("Successfully retrieved peers from tracker")
+		return peerHashes, nil
 	}
-	log.WithField("peer_count", len(peerHashes)).Info("Successfully retrieved peers from tracker")
-	return peerHashes, nil
 }
 
-func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from EepTorrent tracker")
 	config := TrackerConfig{
 		Name:        "EepTorrent",
@@ -160,67 +207,79 @@ func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
 		//TrackerAddr: "opentracker.eeptorrent.i2p",
 		Path: "a",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromPostmanTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromPostmanTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from postman tracker")
 	config := TrackerConfig{
 		Name:        "Dg2",
 		TrackerAddr: "tracker2.postman.i2p",
 		Path:        "announce.php",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromSimpTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromSimpTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from Simp tracker")
 	config := TrackerConfig{
 		Name:        "Simp",
 		TrackerAddr: "wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p",
 		Path:        "a",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from Dg2 tracker")
 	config := TrackerConfig{
 		Name:        "Dg2",
 		TrackerAddr: "opentracker.dg2.i2p",
 		Path:        "announce.php",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromSkankTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromSkankTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from Skank tracker")
 	config := TrackerConfig{
 		Name:        "Skank",
 		TrackerAddr: "opentracker.skank.i2p",
 		Path:        "a",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromOmitTracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFromOmitTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from Omit tracker")
 	config := TrackerConfig{
 		Name:        "Omit",
 		TrackerAddr: "a5ruhsktpdhfk5w46i6yf6oqovgdlyzty7ku6t5yrrpf4qedznjq.b32.i2p",
 		Path:        "announce.php",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFrom6kw6Tracker(mi *metainfo.MetaInfo) ([][]byte, error) {
+func GetPeersFrom6kw6Tracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	log.Info("Getting peers from 6kw6 tracker")
 	config := TrackerConfig{
 		Name:        "6kw6",
 		TrackerAddr: "6kw6voy3v5jzmkbg4i3rlqjysre4msgarpkpme6mt5u2jw33nffa.b32.i2p",
 		Path:        "announce",
 	}
-	return getPeersFromTracker(config, mi)
+	return getPeersFromTracker(ctx, config, mi)
 }
 
 func checkPostmanTrackerResponse(response string) error {

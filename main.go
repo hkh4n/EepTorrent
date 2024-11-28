@@ -523,15 +523,16 @@ func main() {
 
 				// Get peers from trackers
 				var allPeers [][]byte
+				timeout := time.Second * 15
 
-				peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi)
+				peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
 				} else {
 					allPeers = append(allPeers, peersEep...)
 				}
 
-				peersPostman, err := tracker.GetPeersFromPostmanTracker(&mi)
+				peersPostman, err := tracker.GetPeersFromPostmanTracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from Postman Tracker")
 				} else {
@@ -539,7 +540,7 @@ func main() {
 				}
 				time.Sleep(1 * time.Second)
 
-				peersSimp, err := tracker.GetPeersFromSimpTracker(&mi)
+				peersSimp, err := tracker.GetPeersFromSimpTracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from Simp Tracker")
 				} else {
@@ -547,7 +548,7 @@ func main() {
 				}
 				time.Sleep(1 * time.Second)
 
-				peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi)
+				peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
 				} else {
@@ -555,7 +556,7 @@ func main() {
 				}
 				time.Sleep(1 * time.Second)
 
-				peersSkank, err := tracker.GetPeersFromSkankTracker(&mi)
+				peersSkank, err := tracker.GetPeersFromSkankTracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from Skank Tracker")
 				} else {
@@ -563,14 +564,14 @@ func main() {
 				}
 				time.Sleep(1 * time.Second)
 
-				peersOmit, err := tracker.GetPeersFromOmitTracker(&mi)
+				peersOmit, err := tracker.GetPeersFromOmitTracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from Omit Tracker")
 				} else {
 					allPeers = append(allPeers, peersOmit...)
 				}
 
-				peers6kw6, err := tracker.GetPeersFrom6kw6Tracker(&mi)
+				peers6kw6, err := tracker.GetPeersFrom6kw6Tracker(&mi, timeout)
 				if err != nil {
 					log.WithError(err).Warn("Failed to get peers from 6kw6 Tracker")
 				} else {
