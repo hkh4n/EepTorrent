@@ -231,6 +231,21 @@ func (dm *DownloadManager) IsFinished() bool {
 
 // OnBlock handles the reception of a block from a peer.
 func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) error {
+	// Validate piece index before accessing array
+	if int(index) >= len(dm.Pieces) {
+		return fmt.Errorf("invalid piece index: %d", index)
+	}
+
+	// Check for nil block data
+	if block == nil {
+		return fmt.Errorf("empty block data")
+	}
+
+	// Check if block size exceeds piece length
+	if int64(len(block)) > dm.Writer.Info().PieceLength {
+		return fmt.Errorf("block size exceeds piece length")
+	}
+
 	dm.Mu.Lock()
 	piece := dm.Pieces[index]
 	dm.Mu.Unlock()
