@@ -270,7 +270,7 @@ func TestBench1KB(t *testing.T) {
 		t.Skip("Multi-file torrent verification not implemented")
 	}
 
-	log.Println("TestBench1MB completed")
+	log.Println("TestBench1KB completed")
 }
 
 func TestBench1MB(t *testing.T) {
