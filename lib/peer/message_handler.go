@@ -241,8 +241,10 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 	}
 	return nil
 }
+
+// requestNextBlock requests the next available block from the peer.
 func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerState) error {
-	log := log.WithFields(logrus.Fields{
+	log := logrus.WithFields(logrus.Fields{
 		"peer":             pc.RemoteAddr().String(),
 		"pending_requests": atomic.LoadInt32(&ps.PendingRequests),
 	})
@@ -296,7 +298,7 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 					atomic.AddInt32(&ps.PendingRequests, 1)
 					log.WithFields(logrus.Fields{
 						"piece_index":      pieceIndex,
-						"offset":           offset,
+						"block_num":        blockNum,
 						"pending_requests": atomic.LoadInt32(&ps.PendingRequests),
 					}).Info("Preparing to request block")
 					piece.Mu.Unlock()
@@ -315,15 +317,13 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 			break
 		}
 
-		//offset := uint32(blockNum) * BlockSize
-		offset := blockNum * BlockSize
+		// Calculate offset and length based on block number
+		offset := uint32(blockNum) * BlockSize
 		length := BlockSize
 
 		// Adjust length for the last block in the piece
-		// Get the actual piece length
 		pieceLength := dm.GetPieceLength(pieceIndex)
 
-		// Adjust length for the last block in the piece
 		if int64(offset)+int64(length) > pieceLength {
 			length = int(pieceLength - int64(offset))
 		}
@@ -335,27 +335,13 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 
 		log.WithFields(logrus.Fields{
 			"piece_index": pieceIndex,
+			"block_num":   blockNum,
 			"offset":      offset,
 			"length":      length,
 		}).Info("Requesting block")
 
-		// Adjust length for the last block in the piece
-		dm.Mu.Lock()
-		var pieceSize int64
-		if int(pieceIndex) == len(dm.Pieces)-1 {
-			// Last piece
-			pieceSize = dm.Writer.Info().TotalLength() - int64(pieceIndex)*dm.Writer.Info().PieceLength
-		} else {
-			pieceSize = dm.Writer.Info().PieceLength
-		}
-		dm.Mu.Unlock()
-
-		if int64(offset)+int64(length) > pieceSize {
-			length = int(pieceSize - int64(offset))
-		}
-
 		// Send the request
-		err := pc.SendRequest(pieceIndex, uint32(offset), uint32(length))
+		err := pc.SendRequest(pieceIndex, offset, uint32(length))
 		if err != nil {
 			log.WithError(err).Error("Failed to send request")
 			if firstErr == nil {

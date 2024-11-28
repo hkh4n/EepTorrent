@@ -22,7 +22,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/downloader"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
@@ -45,6 +44,7 @@ type PieceStatus struct {
 	Blocks      []bool   // true if block is received
 	BlockData   [][]byte // Store block data until piece complete
 	Completed   bool
+	Peers       []*pp.PeerConn
 	Mu          sync.Mutex
 }
 
@@ -74,6 +74,13 @@ type BlockInfo struct {
 	PieceIndex uint32
 	Offset     uint32
 	Length     uint32
+}
+
+// Piece represents a single piece in the torrent.
+type Piece struct {
+	Mu        sync.Mutex
+	Blocks    []bool
+	BlockData [][]byte
 }
 
 // NewDownloadManager initializes a new DownloadManager with accurate block calculations.
@@ -149,6 +156,7 @@ func (dm *DownloadManager) TrackUpload(bytes int64) {
 	dm.LastUploadTime = time.Now()
 }
 
+/*
 func (dm *DownloadManager) IsPieceComplete(pieceIndex uint32) bool {
 	if int(pieceIndex) >= len(dm.Pieces) {
 		return false
@@ -166,6 +174,8 @@ func (dm *DownloadManager) IsPieceComplete(pieceIndex uint32) bool {
 	return true
 }
 
+
+*/
 // reserveBlock atomically reserves a block for download
 func (dm *DownloadManager) reserveBlock(pieceIndex uint32, offset uint32) bool {
 	piece := dm.Pieces[pieceIndex]
@@ -221,309 +231,65 @@ func (dm *DownloadManager) IsFinished() bool {
 }
 
 // OnBlock handles the reception of a block from a peer.
-func (dm *DownloadManager) OnBlock(index, offset uint32, b []byte) error {
+func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) error {
 	dm.Mu.Lock()
-	defer dm.Mu.Unlock()
-
-	log.WithFields(logrus.Fields{
-		"piece_index":  index,
-		"offset":       offset,
-		"block_length": len(b),
-	}).Debug("Received block")
-
-	// Early check: If the piece is already completed, ignore the block.
-	if dm.Bitfield.IsSet(index) {
-		log.WithFields(logrus.Fields{
-			"piece_index": index,
-			"offset":      offset,
-		}).Debug("Received block for already completed piece, ignoring")
-		return nil
-	}
-
-	// Validate piece index.
-	if int(index) >= len(dm.Pieces) {
-		log.WithFields(logrus.Fields{
-			"piece_index":  index,
-			"total_pieces": len(dm.Pieces),
-		}).Error("Received block for invalid piece index")
-		return fmt.Errorf("invalid piece index: %d", index)
-	}
-
 	piece := dm.Pieces[index]
+	dm.Mu.Unlock()
 
-	// Acquire piece-specific lock.
 	piece.Mu.Lock()
 	defer piece.Mu.Unlock()
 
-	log.WithFields(logrus.Fields{
-		"index":  index,
-		"offset": offset,
-		"length": len(b),
-	}).Debug("OnBlock called")
+	// Calculate block number based on 'begin' offset
+	blockNum := begin / downloader.BlockSize
 
-	// Validate piece length
-	info := dm.Writer.Info()
-	pieceLength := dm.GetPieceLength(index)
-
-	log.WithFields(logrus.Fields{
-		"piece_index":  index,
-		"offset":       offset,
-		"piece_length": pieceLength,
-	}).Debug("Piece length obtained")
-
-	// Calculate expected block size
-	expectedBlockSize := downloader.BlockSize
-	if int64(offset)+int64(expectedBlockSize) > pieceLength {
-		expectedBlockSize = int(pieceLength - int64(offset))
-	}
-
-	log.WithFields(logrus.Fields{
-		"piece_index":          index,
-		"offset":               offset,
-		"expectedBlockSize":    expectedBlockSize,
-		"downloader.BlockSize": downloader.BlockSize,
-	}).Debug("Calculated expected block size")
-
-	// For small pieces, adjust expected block size
-	if pieceLength < int64(expectedBlockSize) {
-		expectedBlockSize = int(pieceLength)
-	}
-
-	if len(b) != expectedBlockSize {
-		log.WithFields(logrus.Fields{
-			"received_size": len(b),
-			"expected_size": expectedBlockSize,
-			"piece_length":  pieceLength,
-			"offset":        offset,
-			"piece_index":   index,
-		}).Error("Invalid block size")
-		return fmt.Errorf("invalid block size: got %d, expected %d", len(b), expectedBlockSize)
-	}
-
-	// Calculate block number based on offset.
-	blockNum := offset / downloader.BlockSize
-	if blockNum >= piece.TotalBlocks {
-		log.WithFields(logrus.Fields{
+	// Validate block number
+	if int(blockNum) >= len(piece.Blocks) {
+		logrus.WithFields(logrus.Fields{
 			"piece_index":  index,
-			"offset":       offset,
+			"begin":        begin,
 			"block_num":    blockNum,
-			"total_blocks": piece.TotalBlocks,
+			"total_blocks": len(piece.Blocks),
 		}).Error("Invalid block number")
-		return fmt.Errorf("invalid block offset: %d", offset)
+		return fmt.Errorf("invalid block number %d for piece %d", blockNum, index)
 	}
 
-	log.WithFields(logrus.Fields{
-		"piece_index": index,
-		"block_num":   blockNum,
-	}).Debug("Calculated block number")
-
-	// Check if block is already received.
+	// Check if block is already received
 	if piece.Blocks[blockNum] {
-		log.WithFields(logrus.Fields{
+		logrus.WithFields(logrus.Fields{
 			"piece_index": index,
 			"block_num":   blockNum,
-		}).Warn("Received duplicate block")
-		return nil // Ignore duplicate.
+		}).Warn("Duplicate block received")
+		return nil // Ignore duplicate blocks
 	}
 
-	// Initialize BlockData if needed
-	if piece.BlockData == nil {
-		piece.BlockData = make([][]byte, piece.TotalBlocks)
-		log.WithFields(logrus.Fields{
-			"piece_index":  index,
-			"total_blocks": piece.TotalBlocks,
-		}).Debug("Initialized BlockData for piece")
-	}
-
-	// Store block data in memory and verify it
-	blockData := make([]byte, len(b))
-	copy(blockData, b)
-	piece.BlockData[blockNum] = blockData
-
-	// Log the block data
-	log.WithFields(logrus.Fields{
-		"piece_index": index,
-		"block_num":   blockNum,
-		"block_data":  fmt.Sprintf("%x", blockData),
-	}).Debug("Stored block data")
-
-	// Write the block to disk.
-	n, err := dm.Writer.WriteBlock(index, offset, b)
-	if err != nil {
-		log.WithError(err).Error("Failed to write block")
-		return err
-	}
-
-	// Update download progress.
-	atomic.AddInt64(&dm.Downloaded, int64(n))
-	atomic.AddInt64(&dm.Left, -int64(n))
-
-	log.WithFields(logrus.Fields{
-		"downloaded": atomic.LoadInt64(&dm.Downloaded),
-		"left":       atomic.LoadInt64(&dm.Left),
-	}).Debug("Updated download progress")
-
-	// Mark block as received.
+	// Store the block data
+	piece.BlockData[blockNum] = block
 	piece.Blocks[blockNum] = true
-	log.WithFields(logrus.Fields{
-		"piece_index": index,
-		"block_num":   blockNum,
-	}).Debug("Marked block as received")
 
-	// Log the current state of blocks
-	log.WithFields(logrus.Fields{
-		"blocks_received": piece.Blocks,
-	}).Debug("Current blocks_received status")
+	// Update total downloaded bytes
+	atomic.AddInt64(&dm.Downloaded, int64(len(block)))
 
-	// Check if the piece is completed.
-	if !piece.Completed && dm.isPieceComplete(piece) {
-		log.WithField("piece_index", index).Debug("Piece is complete, verifying hash")
-
-		// Double-check piece completion before verification
-		allBlocksPresent := true
-		for i, received := range piece.Blocks {
-			if !received {
-				allBlocksPresent = false
-				log.WithFields(logrus.Fields{
-					"piece_index":       index,
-					"missing_block_num": i,
-				}).Debug("Block missing during completion check")
-				break
-			}
+	// Check if the piece is complete and verify
+	if dm.isPieceComplete(piece) {
+		if !dm.VerifyPiece(index) {
+			logrus.Panic("Piece verification failed")
 		}
-
-		if !allBlocksPresent {
-			log.WithField("piece_index", index).Warn("Piece appeared complete but some blocks missing")
-			return nil
-		}
-
-		// Double-check all blocks are present
-		for i, blockData := range piece.BlockData {
-			if blockData == nil {
-				log.WithFields(logrus.Fields{
-					"piece_index": index,
-					"block_index": i,
-				}).Error("Block data is nil during verification")
-				return fmt.Errorf("missing block data at index %d for piece %d", i, index)
-			}
-		}
-
-		// Combine all blocks and verify the complete piece
-		completeData := make([]byte, 0, pieceLength)
-		for i, blockData := range piece.BlockData {
-			log.WithFields(logrus.Fields{
-				"piece_index": index,
-				"block_num":   i,
-				"block_size":  len(blockData),
-			}).Debug("Appending block data to completeData")
-			completeData = append(completeData, blockData...)
-		}
-
-		// Log the complete piece data
-		log.WithFields(logrus.Fields{
-			"piece_index":           index,
-			"complete_data_length":  len(completeData),
-			"expected_piece_length": pieceLength,
-		}).Debug("Assembled complete piece data")
-
-		rawExpectedHash := info.Pieces[index]
-		expectedHash, err := hex.DecodeString(rawExpectedHash.String())
-		if err != nil {
-			log.WithError(err).Panic("Failed to decode expected hash")
-		}
-		actualHash := sha1.Sum(completeData)
-
-		log.WithFields(logrus.Fields{
-			"piece_index":   index,
-			"expected_hash": fmt.Sprintf("%x", expectedHash),
-			"actual_hash":   fmt.Sprintf("%x", actualHash),
-		}).Debug("Computed hashes for verification")
-
-		if bytes.Equal(expectedHash[:], actualHash[:]) {
-			// Verified successfully
-			dm.Bitfield.Set(index)
-			piece.Completed = true
-
-			// Clear block data to free memory
-			piece.BlockData = nil
-
-			log.WithFields(logrus.Fields{
-				"piece_index":  index,
-				"total_pieces": len(dm.Pieces),
-				"progress":     fmt.Sprintf("%.2f%%", float64(index+1)/float64(len(dm.Pieces))*100),
-			}).Info("Completed piece")
-
-			// Advertise the newly completed piece to all connected peers.
-			for _, peerConn := range dm.Peers {
-				err := peerConn.SendHave(index)
-				if err != nil {
-					log.WithFields(logrus.Fields{
-						"peer":        peerConn.RemoteAddr().String(),
-						"piece_index": index,
-					}).WithError(err).Error("Failed to send Have message to peer")
-				} else {
-					log.WithFields(logrus.Fields{
-						"peer":        peerConn.RemoteAddr().String(),
-						"piece_index": index,
-					}).Info("Sent Have message to peer")
-				}
-			}
-		} else {
-			log.WithFields(logrus.Fields{
-				"piece_index":   index,
-				"expected_hash": fmt.Sprintf("%x", expectedHash),
-				"actual_hash":   fmt.Sprintf("%x", actualHash),
-			}).Error("Piece hash mismatch during verification")
-
-			// Reset piece state
-			for i := range piece.Blocks {
-				piece.Blocks[i] = false
-			}
-			piece.BlockData = nil
-
-			// Reset progress counters for this piece
-			pieceLength := int64(len(completeData))
-			atomic.AddInt64(&dm.Downloaded, -pieceLength)
-			atomic.AddInt64(&dm.Left, pieceLength)
-
-			return fmt.Errorf("piece verification failed for index %d", index)
-		}
+		// Broadcast 'Have' message to peers
+		dm.BroadcastHave(index)
 	}
-
-	// Handle endgame scenarios.
-	if dm.IsEndgame() && atomic.LoadInt64(&dm.Left) <= 0 {
-		log.Info("Endgame completed, finalizing download")
-		dm.RequestAllRemainingBlocks(dm.GetAllPeers())
-		if dm.IsFinished() {
-			err := dm.FinalizeDownload()
-			if err != nil {
-				log.WithError(err).Error("Failed to finalize download")
-				return err
-			}
-		}
-	}
-
-	log.WithFields(logrus.Fields{
-		"piece_index":   index,
-		"block_num":     blockNum,
-		"bytes_written": n,
-	}).Debug("Successfully processed block")
 
 	return nil
 }
 
-// isPieceComplete checks if all blocks in a piece are received
+// isPieceComplete checks if all blocks in a PieceStatus have been received.
 func (dm *DownloadManager) isPieceComplete(piece *PieceStatus) bool {
-	log.WithField("piece_index", piece.Index).Debug("Checking if piece is complete")
 	for _, received := range piece.Blocks {
 		if !received {
 			return false
 		}
 	}
-	log.WithField("piece_index", piece.Index).Debug("Piece is complete")
 	return true
 }
-
 func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
@@ -781,10 +547,13 @@ func (dm *DownloadManager) FinalizeDownload() error {
 	log.Info("Finalizing download")
 	// Verify each piece
 	for _, piece := range dm.Pieces {
-		if !dm.VerifyPiece(piece.Index) { // Implement VerifyPiece
+		piece.Mu.Lock()
+		if !dm.VerifyPiece(piece.Index) {
+			piece.Mu.Unlock()
 			log.Errorf("Piece %d verification failed", piece.Index)
 			return fmt.Errorf("piece %d verification failed", piece.Index)
 		}
+		piece.Mu.Unlock()
 	}
 
 	// Close writer and perform cleanup
@@ -799,15 +568,16 @@ func (dm *DownloadManager) FinalizeDownload() error {
 }
 
 // VerifyPiece verifies the integrity of a downloaded piece.
+// Assumes that the caller already holds piece.Mu.Lock().
 func (dm *DownloadManager) VerifyPiece(index uint32) bool {
-	log.WithField("piece_index", index).Debug("Verifying piece")
+	logrus.WithField("piece_index", index).Debug("Verifying piece")
 
 	info := dm.Writer.Info()
 	totalPieces := info.CountPieces()
 
 	// Validate the piece index
 	if int(index) >= totalPieces {
-		log.WithFields(logrus.Fields{
+		logrus.WithFields(logrus.Fields{
 			"piece_index":  index,
 			"total_pieces": totalPieces,
 		}).Error("Invalid piece index for verification")
@@ -815,70 +585,44 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 	}
 
 	piece := dm.Pieces[index]
-	piece.Mu.Lock()
-	defer piece.Mu.Unlock()
 
-	// If we have block data in memory, verify from that instead of disk
-	if piece.BlockData != nil {
-		completeData := make([]byte, 0, info.PieceLength)
-		for _, blockData := range piece.BlockData {
-			completeData = append(completeData, blockData...)
-		}
+	// Removed locking to prevent deadlock
+	// piece.Mu.Lock()
+	// defer piece.Mu.Unlock()
 
-		expectedHash := info.Pieces[index]
-
-		fmt.Printf("%s\n", expectedHash.String())
-		fmt.Printf("%s\n", expectedHash.BytesString())
-		fmt.Printf("%s\n", expectedHash.HexString())
-		decodedExpectedHash, err := hex.DecodeString(expectedHash.String())
-		if err != nil {
-			log.WithError(err).Error("Failed to decode expected hash")
+	// Assemble completeData in the correct order
+	completeData := make([]byte, 0, info.PieceLength)
+	for blockNum := 0; blockNum < len(piece.BlockData); blockNum++ {
+		if !piece.Blocks[blockNum] || piece.BlockData[blockNum] == nil {
+			logrus.WithFields(logrus.Fields{
+				"piece_index": index,
+				"block_num":   blockNum,
+			}).Error("Missing block data for verification")
 			return false
 		}
-
-		actualHash := sha1.Sum(completeData)
-		doubleData := append(completeData, completeData...)
-		doubleHash := sha1.Sum(doubleData)
-
-		if !bytes.Equal(expectedHash[:], actualHash[:]) {
-			log.WithFields(logrus.Fields{
-				"piece_index":         index,
-				"decodedExpectedHash": fmt.Sprintf("%x", decodedExpectedHash),
-				"expected_hash":       fmt.Sprintf("%x", expectedHash),
-				"actual_hash":         fmt.Sprintf("%x", actualHash),
-				"doubleHash":          fmt.Sprintf("%x", doubleHash),
-			}).Panic("Piece hash mismatch (memory verification)")
-			return false
-		}
-		log.Info("===\nFOUND CORRECT HASH!\n===")
-		return true
-	}
-
-	// Fall back to disk verification if no in-memory data
-	pieceData, err := dm.ReadPiece(index)
-	if err != nil {
-		log.WithError(err).Error("Failed to read piece for verification")
-		return false
+		completeData = append(completeData, piece.BlockData[blockNum]...)
 	}
 
 	expectedHash := info.Pieces[index]
-	actualHash := sha1.Sum(pieceData)
 
+	actualHash := sha1.Sum(completeData)
+
+	// Direct binary comparison
 	if !bytes.Equal(expectedHash[:], actualHash[:]) {
-		log.WithFields(logrus.Fields{
+		logrus.WithFields(logrus.Fields{
 			"piece_index":   index,
 			"expected_hash": fmt.Sprintf("%x", expectedHash),
 			"actual_hash":   fmt.Sprintf("%x", actualHash),
-		}).Panic("Piece hash mismatch (disk verification)")
+		}).Panic("Piece hash mismatch (memory verification)")
 		return false
 	}
-
+	logrus.Info("===\nFOUND CORRECT HASH!\n===")
 	return true
 }
 
 // ReadPiece reads the data of a specific piece from disk.
 func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
-	log.WithField("piece_index", index).Debug("Reading piece from disk")
+	logrus.WithField("piece_index", index).Debug("Reading piece from disk")
 	info := dm.Writer.Info()
 	pieceLength := info.PieceLength
 	totalPieces := info.CountPieces()
@@ -902,7 +646,7 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 
 	pieceData := make([]byte, actualLength)
 
-	log.WithFields(logrus.Fields{
+	logrus.WithFields(logrus.Fields{
 		"piece_index":  index,
 		"piece_size":   actualLength,
 		"download_dir": dm.DownloadDir,
@@ -912,11 +656,12 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 	if len(info.Files) == 0 {
 		// Single-file torrent
 		filePath := filepath.Join(dm.DownloadDir, info.Name)
-		log.WithField("file_path", filePath).Warn("Attempting to stat file") // Add this line
+		logrus.WithField("file_path", filePath).Debug("Attempting to read single-file torrent")
+
 		// Check if the path is a directory
 		fi, err := os.Stat(filePath)
 		if err != nil {
-			log.WithFields(logrus.Fields{
+			logrus.WithFields(logrus.Fields{
 				"file_path": filePath,
 				"error":     err,
 			}).Error("Failed to stat file")
@@ -955,8 +700,6 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 				return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
 			}
 
-			defer file.Close()
-
 			// Calculate the start position within the file
 			pieceStart := int64(index)*pieceLength - currentOffset
 			if pieceStart < 0 {
@@ -972,10 +715,12 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 
 			readBytes, err := file.ReadAt(pieceData[bytesRead:], pieceStart)
 			if err != nil && err != io.EOF {
+				file.Close()
 				return nil, fmt.Errorf("failed to read piece %d from file %s: %v", index, filePath, err)
 			}
 
 			bytesRead += int64(readBytes)
+			file.Close()
 			currentOffset += fileSize
 
 			if bytesRead >= actualLength {
@@ -988,7 +733,7 @@ func (dm *DownloadManager) ReadPiece(index uint32) ([]byte, error) {
 		}
 	}
 
-	log.WithField("piece_index", index).Debug("Successfully read piece from disk")
+	logrus.WithField("piece_index", index).Debug("Successfully read piece from disk")
 	return pieceData, nil
 }
 
@@ -1027,13 +772,6 @@ func (dm *DownloadManager) GetBlock(pieceIndex, offset, length uint32) ([]byte, 
 
 	if int(pieceIndex) == totalPieces-1 {
 		// Last piece may have a different length
-		/* // Copy over?
-		info := dm.Writer.Info()
-		if int64(offset)+int64(length) > info.PieceLength {
-		    length = int(info.PieceLength - int64(offset))
-		}
-
-		*/
 		remaining := info.TotalLength() - int64(pieceIndex)*pieceLength
 		if int64(offset)+int64(length) > remaining {
 			log.Error("Requested block exceeds piece boundaries")
@@ -1117,28 +855,26 @@ func (dm *DownloadManager) GetBlock(pieceIndex, offset, length uint32) ([]byte, 
 	return blockData, nil
 }
 
-func (dm *DownloadManager) BroadcastHave(pieceIndex uint32) {
+// BroadcastHave sends a 'Have' message to all connected peers for a specific piece.
+func (dm *DownloadManager) BroadcastHave(index uint32) {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
 
-	for _, peerConn := range dm.Peers {
-		go func(pc *pp.PeerConn) {
-			err := pc.SendHave(pieceIndex)
-			if err != nil {
-				logrus.WithFields(logrus.Fields{
-					"peer":        pc.RemoteAddr().String(),
-					"piece_index": pieceIndex,
-				}).WithError(err).Error("Failed to send 'Have' message to peer")
-			} else {
-				logrus.WithFields(logrus.Fields{
-					"peer":        pc.RemoteAddr().String(),
-					"piece_index": pieceIndex,
-				}).Info("Sent 'Have' message to peer")
-			}
-		}(peerConn)
+	for _, peer := range dm.Pieces[index].Peers {
+		err := peer.SendHave(index)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"peer":        peer.RemoteAddr().String(),
+				"piece_index": index,
+			}).WithError(err).Error("Failed to send 'Have' message")
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"peer":        peer.RemoteAddr().String(),
+				"piece_index": index,
+			}).Info("Sent 'Have' message to peer")
+		}
 	}
 }
-
 func (dm *DownloadManager) CalculateNumberOfBlocks(pieceIndex int) int {
 	info := dm.Writer.Info()
 	if pieceIndex < dm.TotalPieces-1 {
