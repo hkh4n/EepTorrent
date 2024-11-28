@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
+      - name: Tidy Go modules
+        run: go mod tidy
+
       - name: Prepare test environment
         run: |
           mkdir -p /tmp
