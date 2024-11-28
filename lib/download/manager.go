@@ -616,7 +616,7 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 		}).Panic("Piece hash mismatch (memory verification)")
 		return false
 	}
-	logrus.Info("===\nFOUND CORRECT HASH!\n===")
+	logrus.Info("===FOUND CORRECT HASH===")
 	return true
 }
 
