@@ -1,6 +1,7 @@
 package download
 
 import (
+	"crypto/sha1"
 	"github.com/go-i2p/go-i2p-bt/downloader"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
@@ -74,23 +75,37 @@ func setupTestDownloadManager(t *testing.T) (*DownloadManager, *MockWriter, stri
 		t.Fatal(err)
 	}
 
-	// Create piece hashes - we'll create 4 pieces
 	numPieces := 4
-	pieceHashes := make(metainfo.Hashes, numPieces)
+	pieceLength := int64(32 * 1024)  // 32KB pieces
+	totalLength := int64(128 * 1024) // 128KB total
 
-	// Fill with dummy hash data
-	for i := 0; i < numPieces; i++ {
-		var hash metainfo.Hash
-		for j := 0; j < metainfo.HashSize; j++ {
-			hash[j] = byte((i*metainfo.HashSize + j) % 256)
+	// Pre-calculate the actual piece hashes that will match our test data
+	pieceHashes := make(metainfo.Hashes, numPieces)
+	for pieceIndex := 0; pieceIndex < numPieces; pieceIndex++ {
+		// Create the same piece data that the test will write
+		pieceData := make([]byte, pieceLength)
+		for offset := 0; offset < int(pieceLength); offset += downloader.BlockSize {
+			remainingBytes := int(pieceLength) - offset
+			currentBlockSize := downloader.BlockSize
+			if remainingBytes < downloader.BlockSize {
+				currentBlockSize = remainingBytes
+			}
+
+			// Fill block with same pattern as test
+			for i := 0; i < currentBlockSize; i++ {
+				pieceData[offset+i] = byte(i % 256)
+			}
 		}
-		pieceHashes[i] = hash
+
+		// Calculate SHA1 hash of the piece data
+		hash := sha1.Sum(pieceData)
+		pieceHashes[pieceIndex] = metainfo.NewHash(hash[:])
 	}
 
 	// Create test info
 	info := metainfo.Info{
-		PieceLength: 32 * 1024,  // 32KB pieces
-		Length:      128 * 1024, // 128KB total size
+		PieceLength: pieceLength,
+		Length:      totalLength,
 		Name:        "test_file",
 		Pieces:      pieceHashes,
 	}
