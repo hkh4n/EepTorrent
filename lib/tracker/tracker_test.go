@@ -42,7 +42,7 @@ func TestTrackers(t *testing.T) {
 	// Define test cases
 	trackerTests := []struct {
 		name    string
-		getFn   func(*metainfo.MetaInfo) ([][]byte, error)
+		getFn   func(*metainfo.MetaInfo, time.Duration) ([][]byte, error)
 		timeout time.Duration
 	}{
 		{
@@ -89,7 +89,7 @@ func TestTrackers(t *testing.T) {
 			var testErr error
 
 			go func() {
-				peers, testErr = tt.getFn(&mi)
+				peers, testErr = tt.getFn(&mi, time.Second*30)
 				done <- true
 			}()
 
