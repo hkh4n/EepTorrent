@@ -163,7 +163,7 @@ func RunApp() {
 	torrentListBinding = binding.NewUntypedList()
 
 	// Create the torrent list view
-	torrentListView := createTorrentListView()
+	torrentListView = createTorrentListView()
 
 	// Main content container
 	mainContent := container.NewMax()
@@ -624,40 +624,54 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 			}
 		}
 	}(torrentItem)
+	go func() {
+		// Get peers from trackers
+		allPeers, err := getAllPeers(&mi)
+		if err != nil {
+			ShowError("Failed to get peers from any tracker", err, myWindow)
+			return
+		}
 
-	// Get peers from trackers
-	allPeers, err := getAllPeers(&mi)
-	if err != nil {
-		ShowError("Failed to get peers from any tracker", err, myWindow)
-		return
-	}
+		uniquePeers := peer.RemoveDuplicatePeers(allPeers)
 
-	uniquePeers := peer.RemoveDuplicatePeers(allPeers)
+		// Limit the number of connections based on user settings
+		maxPeers := maxConnections
+		if len(uniquePeers) < maxPeers {
+			maxPeers = len(uniquePeers)
+		}
 
-	// Limit the number of connections based on user settings
-	maxPeers := maxConnections
-	if len(uniquePeers) < maxPeers {
-		maxPeers = len(uniquePeers)
-	}
+		var wg sync.WaitGroup
+		for i := 0; i < maxPeers; i++ {
+			wg.Add(1)
+			go func(peerHash []byte, index int) {
+				defer wg.Done()
+				retryConnect(torrentItem.ctx, peerHash, index, &mi, torrentItem.dm, torrentItem.pm, maxRetries, initialDelay)
+			}(uniquePeers[i], i)
+		}
 
-	var wg sync.WaitGroup
-	for i := 0; i < maxPeers; i++ {
-		wg.Add(1)
-		go func(peerHash []byte, index int) {
-			defer wg.Done()
-			retryConnect(torrentItem.ctx, peerHash, index, &mi, torrentItem.dm, torrentItem.pm, maxRetries, initialDelay)
-		}(uniquePeers[i], i)
-	}
+		wg.Wait()
 
-	wg.Wait()
+		if torrentItem.dm.IsFinished() {
+			dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name), myWindow)
+			torrentItem.Status = "Seeding"
+			fyne.CurrentApp().SendNotification(&fyne.Notification{
+				Title:   "Download Complete",
+				Content: fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name),
+			})
+			torrentItem.Status = "Seeding"
+		} else {
+			dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
+			torrentItem.Status = "Incomplete"
+			fyne.CurrentApp().SendNotification(&fyne.Notification{
+				Title:   "Download Incomplete",
+				Content: fmt.Sprintf("%s did not complete successfully.", torrentItem.Name),
+			})
+		}
 
-	if torrentItem.dm.IsFinished() {
-		dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name), myWindow)
-		torrentItem.Status = "Seeding"
-	} else {
-		dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
-		torrentItem.Status = "Incomplete"
-	}
+		torrentListBinding.Set(torrentListToAnySlice(torrentList))
+		torrentListView.Refresh()
+
+	}()
 }
 
 // showTorrentDetails displays detailed information about a torrent
