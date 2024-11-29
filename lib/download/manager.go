@@ -66,6 +66,8 @@ type DownloadManager struct {
 	ctx                 context.Context
 	cancelFunc          context.CancelFunc
 	wg                  sync.WaitGroup
+	reservedMutex       sync.Mutex
+	reserved            map[uint32]map[uint32]bool
 }
 
 // BlockInfo represents a specific block within a piece.
@@ -139,6 +141,7 @@ func NewDownloadManager(writer metainfo.Writer, totalLength int64, pieceLength i
 		DownloadDir:     downloadDir,
 		ctx:             ctx,
 		cancelFunc:      cancel,
+		reserved:        make(map[uint32]map[uint32]bool),
 	}
 }
 
@@ -193,6 +196,19 @@ func (dm *DownloadManager) reserveBlock(pieceIndex uint32, offset uint32) bool {
 	// Mark block as reserved
 	piece.Blocks[blockIndex] = true
 	return true
+}
+
+// releaseBlock releases a reserved block (if needed)
+func (dm *DownloadManager) releaseBlock(pieceIndex, offset uint32) {
+	dm.reservedMutex.Lock()
+	defer dm.reservedMutex.Unlock()
+
+	if dm.reserved[pieceIndex] != nil {
+		delete(dm.reserved[pieceIndex], offset)
+		if len(dm.reserved[pieceIndex]) == 0 {
+			delete(dm.reserved, pieceIndex)
+		}
+	}
 }
 
 // validatePieceSize ensures the piece length is correct
