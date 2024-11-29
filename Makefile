@@ -110,8 +110,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 test:
-	$(GOTEST) -v ./lib/download/
-	$(GOTEST) -v ./lib/peer/
+	$(GOTEST) -v ./lib/...
 
 run:
 	mkdir -p $(BUILD_DIR)
