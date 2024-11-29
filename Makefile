@@ -32,25 +32,53 @@ LDFLAGS=-ldflags "-X 'eeptorrent/lib/util.Version=$(VERSION)' -X 'eeptorrent/lib
 ANDROID_SDK_ROOT?=$(ANDROID_HOME)
 ANDROID_NDK_HOME?=$(ANDROID_NDK_ROOT)
 MIN_SDK_VERSION=21
-
+# Android and iOS parameters
+ANDROID_APP_ID=com.i2p.eeptorrent
+IOS_APP_ID=com.i2p.eeptorrent
+ICON_PATH=images/Logo.png
 
 # Targets
-.PHONY: all build build-linux-amd64 build-android build-android-arm64 build-android-arm build-android-amd64 check-android clean test run install uninstall
+.PHONY: all build build-linux build-windows build-macos build-android build-android-arm64 build-android-arm build-android-amd64 check-android clean test run install uninstall
 
 all: test build
+
+build: build-linux build-windows build-macos build-android build-ios
 
 build-tools:
 	mkdir -p $(BUILD_DIR)
 	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(TOOLS_BINARY) -v $(TOOLS_MAIN)
 	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(ANACROLIX_BINARY) -v $(ANACROLIX_ANALYZE_MAIN)
 
-build:
-	mkdir -p $(BUILD_DIR)
-	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) -v $(MAIN)
-
-build-linux-amd64:
+build-linux:
+	@echo "Building for Linux..."
 	mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 -v $(MAIN)
+	GOOS=linux GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 -v $(MAIN)
+	GOOS=linux GOARCH=arm $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm -v $(MAIN)
+
+build-windows:
+	@echo "Building for Windows..."
+	mkdir -p $(BUILD_DIR)
+	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe -v $(MAIN)
+	GOOS=windows GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-arm64.exe -v $(MAIN)
+	GOOS=windows GOARCH=386   $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-386.exe -v $(MAIN)
+
+build-macos:
+	@echo "Building for macOS..."
+	mkdir -p $(BUILD_DIR)
+	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-macos-amd64 -v $(MAIN)
+	GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-macos-arm64 -v $(MAIN)
+
+build-ios:
+	@echo "Building for iOS..."
+	mkdir -p $(BUILD_DIR)
+	fyne package -os ios \
+		-icon $(ICON_PATH) \
+		-appID $(IOS_APP_ID) \
+		-name $(BINARY_NAME) \
+		-appVersion $(VERSION)
+	mv $(BINARY_NAME).ipa $(BUILD_DIR)/$(BINARY_NAME)-ios.ipa
+
 
 build-android: build-android-arm64 build-android-arm build-android-amd64
 
@@ -59,7 +87,7 @@ build-android-arm64:
 	fyne package -os android/arm64 \
 		-appID $(ANDROID_PACKAGE) \
 		-name $(BINARY_NAME) \
-		-icon images/Logo.png \
+		-icon $(ICON_PATH) \
 		-appVersion $(VERSION) \
 		-metadata MinSDK=21 \
 		--exe $(BUILD_DIR)/$(BINARY_NAME)-arm64.apk
@@ -70,7 +98,7 @@ build-android-arm:
 	fyne package -os android/arm \
 		-appID $(ANDROID_PACKAGE) \
 		-name $(BINARY_NAME) \
-		-icon images/Logo.png \
+		-icon $(ICON_PATH) \
 		-appVersion $(VERSION) \
 		-metadata MinSDK=21 \
 		--exe $(BUILD_DIR)/$(BINARY_NAME)-arm.apk
@@ -85,7 +113,7 @@ build-android-amd64:
 	fyne package -os android/amd64 \
 		-appID $(ANDROID_PACKAGE) \
 		-name $(BINARY_NAME) \
-		-icon images/Logo.png \
+		-icon $(ICON_PATH) \
 		-appVersion $(VERSION) \
 		-metadata MinSDK=21 \
 		--exe ./$(BUILD_DIR)/$(BINARY_NAME)-x86_64.apk
