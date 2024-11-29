@@ -164,7 +164,7 @@ func TestBench1KB(t *testing.T) {
 							return
 						}
 						if verified {
-							log.Printf("Piece %d verification succeeded")
+							log.Printf("Piece %d verification succeeded", i)
 							return
 						}
 					}
@@ -401,7 +401,7 @@ func TestBench1MB(t *testing.T) {
 							return
 						}
 						if verified {
-							log.Printf("Piece %d verification succeeded")
+							log.Printf("Piece %d verification succeeded", i)
 							return
 						}
 					}
