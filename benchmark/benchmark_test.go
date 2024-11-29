@@ -158,8 +158,13 @@ func TestBench1KB(t *testing.T) {
 					log.Printf("Download completed, verifying pieces...")
 					// Verify all pieces before declaring completion
 					for i := 0; i < info.CountPieces(); i++ {
-						if !dm.VerifyPiece(uint32(i)) {
+						verified, err := dm.VerifyPiece(uint32(i))
+						if err != nil {
 							log.Printf("Piece %d verification failed", i)
+							return
+						}
+						if verified {
+							log.Printf("Piece %d verification succeeded")
 							return
 						}
 					}
@@ -390,8 +395,13 @@ func TestBench1MB(t *testing.T) {
 					log.Printf("Download completed, verifying pieces...")
 					// Verify all pieces before declaring completion
 					for i := 0; i < info.CountPieces(); i++ {
-						if !dm.VerifyPiece(uint32(i)) {
+						verified, err := dm.VerifyPiece(uint32(i))
+						if err != nil {
 							log.Printf("Piece %d verification failed", i)
+							return
+						}
+						if verified {
+							log.Printf("Piece %d verification succeeded")
 							return
 						}
 					}
