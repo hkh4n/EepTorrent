@@ -15,11 +15,14 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
+	"image"
+	"image/color"
 	"io"
 	"net"
 	"os"
@@ -31,39 +34,66 @@ import (
 )
 
 var (
-	log          = logrus.StandardLogger()
-	maxRetries   = 100
-	initialDelay = 2 * time.Second
-	logFile      *os.File
-	logFileMux   sync.Mutex
-	logBuffer    bytes.Buffer
+	log                = logrus.StandardLogger()
+	maxRetries         = 100
+	initialDelay       = 2 * time.Second
+	logFile            *os.File
+	logFileMux         sync.Mutex
+	logBuffer          bytes.Buffer
+	downloadDir        string
+	maxConnections     int
+	torrentListBinding binding.UntypedList
+	addButton          *widget.Button
+	myWindow           fyne.Window
+	selectedTorrent    *TorrentItem
+	myApp              fyne.App
+	torrentListView    *widget.List
+	removeButton       *widget.Button
+	logsContent        *widget.Label
 )
 
+type TorrentItem struct {
+	Name            string
+	Status          string
+	Progress        float64
+	DownloadSpeed   float64
+	UploadSpeed     float64
+	Downloaded      int64
+	Uploaded        int64
+	Size            int64
+	ETA             string
+	Peers           int
+	dm              *download.DownloadManager
+	pm              *peer.PeerManager
+	ctx             context.Context
+	cancelFunc      context.CancelFunc
+	progressBinding binding.Float
+}
+
+var torrentList []*TorrentItem
+var torrentListLock sync.Mutex
+
+func init() {
+	// Configure logrus
+	log.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		DisableColors: false,
+	})
+	log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer))
+	log.SetLevel(logrus.DebugLevel)
+}
+
+// RunApp initializes and runs the GUI application.
 // RunApp initializes and runs the GUI application.
 func RunApp() {
-	myApp := app.NewWithID("com.i2p.EepTorrent")
+	myApp = app.NewWithID("com.i2p.EepTorrent")
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
-	myWindow := myApp.NewWindow("EepTorrent")
+	myWindow = myApp.NewWindow("EepTorrent")
 
 	ShowDisclaimer(myApp, myWindow)
 
-	var dm *download.DownloadManager
-	var wg sync.WaitGroup
-	var downloadInProgress bool
-	var downloadCancel context.CancelFunc
-
-	progressBar := widget.NewProgressBar()
-	statusLabel := widget.NewLabel("Ready")
-	startButton := widget.NewButton("Start Download", nil)
-	stopButton := widget.NewButton("Stop Download", nil)
-	stopButton.Disable()
-
-	// Speed and upload labels
-	downloadSpeedLabel := widget.NewLabel("Download Speed: 0 KB/s")
-	uploadSpeedLabel := widget.NewLabel("Upload Speed: 0 KB/s")
-	totalUploadedLabel := widget.NewLabel("Total Uploaded: 0 MB")
-
+	// Settings Form
 	downloadDirEntry := widget.NewEntry()
 	downloadDirEntry.SetPlaceHolder("Select download directory")
 	downloadDirButton := widget.NewButton("Browse", func() {
@@ -106,29 +136,12 @@ func RunApp() {
 	// Define content for other menu items
 	uploadsContent := widget.NewLabel("Uploads content goes here.")
 	peersContent := widget.NewLabel("Peers content goes here.")
-	logsContent := widget.NewLabel("")
+	logsContent = widget.NewLabel("")
 	logsContent.Wrapping = fyne.TextWrapWord
 	metricsContent := container.NewVBox()
 
 	// Periodically update logsContent with logBuffer
-	go func() {
-		const maxLogLength = 3600 // Define maximum log length
-		var previousLogs string
-		for {
-			time.Sleep(1 * time.Second) // Adjust the interval as needed
-			logFileMux.Lock()
-			currentLogs := logBuffer.String()
-			if currentLogs != previousLogs {
-				// Trim the log to the last maxLogLength characters if necessary
-				if len(currentLogs) > maxLogLength {
-					currentLogs = currentLogs[len(currentLogs)-maxLogLength:]
-				}
-				logsContent.SetText(currentLogs)
-				previousLogs = currentLogs
-			}
-			logFileMux.Unlock()
-		}
-	}()
+	go updateLogsContent()
 
 	// Initialize ChartData
 	chartData := NewChartData(30)
@@ -143,8 +156,18 @@ func RunApp() {
 		chartImage,
 	)
 
+	// Start updating the chart
+	go updateMetricsChart(chartData, chartImage)
+
+	// Initialize torrent list binding
+	torrentListBinding = binding.NewUntypedList()
+
+	// Create the torrent list view
+	torrentListView := createTorrentListView()
+
+	// Main content container
 	mainContent := container.NewMax()
-	menuItems := []string{"Settings", "Downloads", "Uploads", "Peers", "Logs", "Metrics"}
+	menuItems := []string{"Settings", "Torrents", "Uploads", "Peers", "Logs", "Metrics"}
 
 	menuList := widget.NewList(
 		func() int {
@@ -163,16 +186,18 @@ func RunApp() {
 		switch selectedItem {
 		case "Settings":
 			mainContent.Objects = []fyne.CanvasObject{settingsForm}
-		case "Downloads":
-			downloadsVBox := container.NewVBox(
-				progressBar,
-				downloadSpeedLabel,
-				uploadSpeedLabel,
-				totalUploadedLabel,
-				statusLabel,
-				container.NewHBox(startButton, stopButton),
+		case "Torrents":
+			// Create toolbar
+			toolbar := createToolbar(downloadDirEntry, maxConnectionsEntry)
+			// Create headers
+			headers := createListHeaders()
+			// Combine toolbar, headers, and list
+			torrentsVBox := container.NewVBox(
+				toolbar,
+				headers,
+				torrentListView,
 			)
-			mainContent.Objects = []fyne.CanvasObject{downloadsVBox}
+			mainContent.Objects = []fyne.CanvasObject{torrentsVBox}
 		case "Uploads":
 			mainContent.Objects = []fyne.CanvasObject{uploadsContent}
 		case "Peers":
@@ -215,63 +240,16 @@ func RunApp() {
 
 	menu := fyne.NewMainMenu(
 		fyne.NewMenu("File",
-			fyne.NewMenuItem("Open Torrent File...", func() {
-				startButton.OnTapped()
+			fyne.NewMenuItem("Add Torrent...", func() {
+				// Trigger the Add Torrent button
+				if addButton != nil && addButton.OnTapped != nil {
+					addButton.OnTapped()
+				} else {
+					dialog.ShowError(fmt.Errorf("Add Torrent button is not available"), myWindow)
+				}
 			}),
 			fyne.NewMenuItem("Save Logs to File...", func() {
-				saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
-					if err != nil {
-						ShowError("Save Logs Error", err, myWindow)
-						return
-					}
-					if writer == nil {
-						// User canceled the dialog
-						return
-					}
-					logFilePath := writer.URI().Path()
-					writer.Close() // Close immediately after getting the path
-
-					if logFilePath == "" {
-						ShowError("Invalid File Path", fmt.Errorf("No file path selected"), myWindow)
-						return
-					}
-
-					// Open the selected log file
-					file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-					if err != nil {
-						ShowError("Failed to Open Log File", err, myWindow)
-						return
-					}
-
-					// Safely update the log output
-					logFileMux.Lock()
-					defer logFileMux.Unlock()
-
-					// Write the contents of logBuffer to the file
-					_, err = file.Write(logBuffer.Bytes())
-					if err != nil {
-						ShowError("Failed to Write Logs to File", err, myWindow)
-						file.Close()
-						return
-					}
-
-					// If a log file was previously open, close it
-					if logFile != nil {
-						logFile.Close()
-					}
-
-					logFile = file
-					// Set Logrus to write to os.Stderr, logBuffer, and the file
-					log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer, logFile))
-					log.Info("Logging to file enabled")
-					dialog.ShowInformation("Logging Enabled", fmt.Sprintf("Logs are being saved to:\n%s", logFilePath), myWindow)
-				}, myWindow)
-
-				// Set the default file name
-				saveDialog.SetFileName("eeptorrent.log")
-
-				// Show the save dialog
-				saveDialog.Show()
+				saveLogsToFile()
 			}),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("Quit", func() {
@@ -301,45 +279,12 @@ func RunApp() {
 		logFileMux.Unlock()
 	})
 
-	// Initialize ChartData and start a goroutine to update the chart periodically
-	/*
-		go func() {
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					// Replace with actual download and upload speeds
-					downloadSpeed := rand.Float64() * 100
-					uploadSpeed := rand.Float64() * 50
-					chartData.AddPoint(downloadSpeed, uploadSpeed)
+	myWindow.ShowAndRun()
+}
 
-					// Update the chart on the main thread
-					UpdateMetricsChart(chartData, chartImage, myApp)
-				}
-			}
-		}()
-	*/
-
-	// Start button handler
-	startButton.OnTapped = func() {
-		if downloadInProgress {
-			return
-		}
-
-		// Validate and apply settings
-		downloadDir := downloadDirEntry.Text
-		if downloadDir == "" {
-			ShowError("Invalid Settings", fmt.Errorf("Please select a download directory"), myWindow)
-			return
-		}
-
-		maxConnections, err := strconv.Atoi(maxConnectionsEntry.Text)
-		if err != nil || maxConnections <= 0 {
-			ShowError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
-			return
-		}
-
+// createToolbar creates the toolbar with Add and Remove buttons
+func createToolbar(downloadDirEntry *widget.Entry, maxConnectionsEntry *widget.Entry) *fyne.Container {
+	addButton = widget.NewButton("Add Torrent", func() {
 		// Open file dialog to select torrent file
 		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil || reader == nil {
@@ -349,196 +294,376 @@ func RunApp() {
 			torrentFilePath := reader.URI().Path()
 			reader.Close()
 
-			downloadInProgress = true
-			startButton.Disable()
-			stopButton.Enable()
-			statusLabel.SetText("Initializing download...")
+			// Validate and apply settings
+			downloadDir := downloadDirEntry.Text
+			if downloadDir == "" {
+				ShowError("Invalid Settings", fmt.Errorf("Please select a download directory"), myWindow)
+				return
+			}
 
-			// Run the download in a separate goroutine
-			go func() {
-				defer func() {
-					downloadInProgress = false
-					startButton.Enable()
-					stopButton.Disable()
-					if dm.IsFinished() {
-						statusLabel.SetText("Seeding...")
-					} else {
-						statusLabel.SetText("Download Incomplete")
-					}
-				}()
+			maxConnections, err := strconv.Atoi(maxConnectionsEntry.Text)
+			if err != nil || maxConnections <= 0 {
+				ShowError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
+				return
+			}
 
-				// Initialize download stats
-				stats := download.NewDownloadStats()
-				_ = stats
-
-				// Load the torrent file
-				mi, err := metainfo.LoadFromFile(torrentFilePath)
-				if err != nil {
-					ShowError("Failed to load torrent", err, myWindow)
-					return
-				}
-
-				info, err := mi.Info()
-				if err != nil {
-					ShowError("Failed to parse torrent info", err, myWindow)
-					return
-				}
-				totalPieces := info.CountPieces()
-				log.Warnf("Torrent Info: Total Length = %d bytes, Piece Length = %d bytes, Total Pieces = %d",
-					info.TotalLength(), info.PieceLength, totalPieces)
-				// Initialize the file writer
-				var outputPath string
-				var mode os.FileMode
-				if len(info.Files) == 0 {
-					// Single-file torrent
-					outputPath = filepath.Join(downloadDir, info.Name) // Correctly set to file path
-					mode = 0644
-				} else {
-					// Multi-file torrent
-					outputPath = filepath.Join(downloadDir, info.Name)
-					mode = 0755
-					// Create the directory if it doesn't exist
-					err := os.MkdirAll(outputPath, mode)
-					if err != nil && !os.IsExist(err) {
-						ShowError("Failed to create output directory", err, myWindow)
-						return
-					}
-				}
-
-				writer := metainfo.NewWriter(outputPath, info, mode)
-				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
-				pm := peer.NewPeerManager(dm)
-				defer pm.Shutdown()
-
-				// If we're a seeder, set all pieces as complete
-				/*
-					dm.Mu.Lock()
-					for i := 0; i < dm.TotalPieces; i++ {
-						dm.Bitfield.Set(uint32(i))
-						piece := dm.Pieces[i]
-						for j := range piece.Blocks {
-							piece.Blocks[j] = true
-						}
-					}
-					dm.Mu.Unlock()
-
-				*/
-
-				//pm := peer.NewPeerManager(dm)
-				progressTicker := time.NewTicker(1 * time.Second)
-				ctx, cancel := context.WithCancel(context.Background())
-				downloadCancel = cancel
-
-				// Start the listener for incoming connections (seeding)
-				go func() {
-					err := startPeerListener(&mi, downloadDir)
-					if err != nil {
-						log.WithError(err).Error("Failed to start peer listener")
-					}
-				}()
-
-				// Progress updater
-				go func() {
-					var prevDownloaded int64 = 0
-					var prevUploaded int64 = 0
-					for {
-						select {
-						case <-progressTicker.C:
-							dm.LogProgress()
-							progress := dm.Progress() / 100
-
-							currentDownloaded := atomic.LoadInt64(&dm.Downloaded)
-							currentUploaded := atomic.LoadInt64(&dm.Uploaded)
-							bytesDownloaded := currentDownloaded - prevDownloaded
-							bytesUploaded := currentUploaded - prevUploaded
-							prevDownloaded = currentDownloaded
-							prevUploaded = currentUploaded
-
-							downloadSpeedKBps := float64(bytesDownloaded) / 1024
-							uploadSpeedKBps := float64(bytesUploaded) / 1024
-
-							// Update GUI elements on the main thread
-
-							progressBar.SetValue(progress)
-							statusLabel.SetText(fmt.Sprintf("Downloading: %.2f%%", dm.Progress()))
-							downloadSpeedLabel.SetText(fmt.Sprintf("Download Speed: %.2f KB/s", downloadSpeedKBps))
-							uploadSpeedLabel.SetText(fmt.Sprintf("Upload Speed: %.2f KB/s", uploadSpeedKBps))
-							totalUploadedLabel.SetText(fmt.Sprintf("Total Uploaded: %.2f MB", float64(dm.Uploaded)/1024/1024))
-
-							// Update the chart with real speeds
-							chartData.AddPoint(downloadSpeedKBps, uploadSpeedKBps)
-							UpdateMetricsChart(chartData, chartImage, myApp)
-
-						case <-ctx.Done():
-							progressTicker.Stop()
-							return
-						}
-					}
-				}()
-				defer progressTicker.Stop()
-
-				// Get peers from trackers
-				allPeers, err := getAllPeers(&mi)
-				if err != nil {
-					ShowError("Failed to get peers from any tracker", err, myWindow)
-					return
-				}
-
-				uniquePeers := peer.RemoveDuplicatePeers(allPeers)
-
-				// Limit the number of connections based on user settings
-				maxPeers := maxConnections
-				if len(uniquePeers) < maxPeers {
-					maxPeers = len(uniquePeers)
-				}
-
-				for i := 0; i < maxPeers; i++ {
-					wg.Add(1)
-					go func(peerHash []byte, index int) {
-						defer wg.Done()
-						retryConnect(ctx, peerHash, index, &mi, dm, pm, maxRetries, initialDelay)
-					}(uniquePeers[i], i)
-				}
-
-				wg.Wait()
-
-				// cancel() // Do Not Cancel the Seeding Context
-
-				if dm.IsFinished() {
-
-					dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", info.Name), myWindow)
-					statusLabel.SetText("Seeding...")
-					select {
-					case <-ctx.Done():
-						return
-					}
-
-				} else {
-					dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
-					statusLabel.SetText("Download Incomplete")
-
-				}
-			}()
+			// Start the torrent download
+			addTorrent(torrentFilePath, downloadDir, maxConnections)
 		}, myWindow)
+	})
+
+	removeButton = widget.NewButton("Remove Torrent", func() {
+		// Remove selected torrent
+		torrentListLock.Lock()
+		defer torrentListLock.Unlock()
+
+		if selectedTorrent != nil {
+			// Stop the torrent
+			selectedTorrent.cancelFunc()
+			// Remove from list
+			for i, t := range torrentList {
+				if t == selectedTorrent {
+					torrentList = append(torrentList[:i], torrentList[i+1:]...)
+					break
+				}
+			}
+			// Update the binding and UI
+			torrentListLock.Lock()
+			torrentList = append(torrentList, selectedTorrent)
+			torrentListBinding.Set(torrentListToAnySlice(torrentList))
+			torrentListLock.Unlock()
+			selectedTorrent = nil
+			//myApp.QueueUpdate(func() {
+			torrentListView.Refresh()
+			//})
+		} else {
+			dialog.ShowInformation("No Torrent Selected", "Please select a torrent to remove.", myWindow)
+		}
+	})
+
+	toolbar := container.NewHBox(addButton, removeButton)
+	return toolbar
+}
+
+// createListHeaders creates headers for the torrent list
+func createListHeaders() *fyne.Container {
+	headers := container.NewHBox(
+		widget.NewLabelWithStyle("Name", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("Status", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("Progress", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("DL Speed", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("UL Speed", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("ETA", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(""),
+	)
+	return headers
+}
+
+// createTorrentListView creates the torrent list view
+func createTorrentListView() *widget.List {
+	torrentListView := widget.NewListWithData(
+		torrentListBinding,
+		func() fyne.CanvasObject {
+			nameLabel := widget.NewLabel("")
+			statusLabel := widget.NewLabel("")
+			progressBar := widget.NewProgressBar()
+			progressBar.Min = 0
+			progressBar.Max = 1
+			downloadSpeedLabel := widget.NewLabel("")
+			uploadSpeedLabel := widget.NewLabel("")
+			etaLabel := widget.NewLabel("")
+			actionButton := widget.NewButton("...", nil)
+			return container.NewHBox(
+				nameLabel,
+				statusLabel,
+				progressBar,
+				downloadSpeedLabel,
+				uploadSpeedLabel,
+				etaLabel,
+				actionButton,
+			)
+		},
+		func(item binding.DataItem, o fyne.CanvasObject) {
+			value, err := item.(binding.Untyped).Get()
+			if err != nil {
+				log.WithError(err).Error("Failed to get item from binding")
+				return
+			}
+			torrent := value.(*TorrentItem)
+			row := o.(*fyne.Container)
+
+			nameLabel := row.Objects[0].(*widget.Label)
+			statusLabel := row.Objects[1].(*widget.Label)
+			progressBar := row.Objects[2].(*widget.ProgressBar)
+			downloadSpeedLabel := row.Objects[3].(*widget.Label)
+			uploadSpeedLabel := row.Objects[4].(*widget.Label)
+			etaLabel := row.Objects[5].(*widget.Label)
+			actionButton := row.Objects[6].(*widget.Button)
+
+			nameLabel.SetText(torrent.Name)
+			statusLabel.SetText(torrent.Status)
+			progressBar.SetValue(torrent.Progress)
+			downloadSpeedLabel.SetText(fmt.Sprintf("%.2f KB/s", torrent.DownloadSpeed))
+			uploadSpeedLabel.SetText(fmt.Sprintf("%.2f KB/s", torrent.UploadSpeed))
+			etaLabel.SetText(torrent.ETA)
+			actionButton.OnTapped = func() {
+				// Show torrent details or context menu
+				showTorrentDetails(torrent, myWindow)
+			}
+		},
+	)
+
+	torrentListView.OnSelected = func(id widget.ListItemID) {
+		torrentListLock.Lock()
+		defer torrentListLock.Unlock()
+		if id >= 0 && id < len(torrentList) {
+			selectedTorrent = torrentList[id]
+		}
+	}
+	return torrentListView
+}
+
+// updateLogsContent periodically updates the logs content label
+func updateLogsContent() {
+	const maxLogLength = 3600 // Define maximum log length
+	var previousLogs string
+	for {
+		time.Sleep(1 * time.Second) // Adjust the interval as needed
+		logFileMux.Lock()
+		currentLogs := logBuffer.String()
+		if currentLogs != previousLogs {
+			// Trim the log to the last maxLogLength characters if necessary
+			if len(currentLogs) > maxLogLength {
+				currentLogs = currentLogs[len(currentLogs)-maxLogLength:]
+			}
+			logsContent.SetText(currentLogs)
+			previousLogs = currentLogs
+		}
+		logFileMux.Unlock()
+	}
+}
+
+// updateMetricsChart updates the metrics chart periodically
+func updateMetricsChart(chartData *ChartData, chartImage *canvas.Image) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			// Aggregate download and upload speeds from all torrents
+			var totalDownloadSpeed float64
+			var totalUploadSpeed float64
+
+			torrentListLock.Lock()
+			for _, torrent := range torrentList {
+				totalDownloadSpeed += torrent.DownloadSpeed
+				totalUploadSpeed += torrent.UploadSpeed
+			}
+			torrentListLock.Unlock()
+
+			chartData.AddPoint(totalDownloadSpeed, totalUploadSpeed)
+
+			// Update the chart on the main thread
+
+			UpdateMetricsChart(chartData, chartImage, myApp)
+
+		}
+	}
+}
+
+func torrentListToAnySlice(torrents []*TorrentItem) []any {
+	items := make([]any, len(torrents))
+	for i, t := range torrents {
+		items[i] = t
+	}
+	return items
+}
+
+// addTorrent starts the download of a torrent and adds it to the torrent list
+func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) {
+	// Load the torrent file
+	mi, err := metainfo.LoadFromFile(torrentFilePath)
+	if err != nil {
+		ShowError("Failed to load torrent", err, myWindow)
+		return
 	}
 
-	// Stop button handler
-	stopButton.OnTapped = func() {
-		if !downloadInProgress {
+	info, err := mi.Info()
+	if err != nil {
+		ShowError("Failed to parse torrent info", err, myWindow)
+		return
+	}
+
+	totalPieces := info.CountPieces()
+	log.Warnf("Torrent Info: Name=%s, Total Length=%d bytes, Piece Length=%d bytes, Total Pieces=%d",
+		info.Name, info.TotalLength(), info.PieceLength, totalPieces)
+
+	// Initialize the file writer
+	var outputPath string
+	var mode os.FileMode
+	if len(info.Files) == 0 {
+		// Single-file torrent
+		outputPath = filepath.Join(downloadDir, info.Name) // Correctly set to file path
+		mode = 0644
+	} else {
+		// Multi-file torrent
+		outputPath = filepath.Join(downloadDir, info.Name)
+		mode = 0755
+		// Create the directory if it doesn't exist
+		err := os.MkdirAll(outputPath, mode)
+		if err != nil && !os.IsExist(err) {
+			ShowError("Failed to create output directory", err, myWindow)
 			return
 		}
-		statusLabel.SetText("Stopping download...")
-		if downloadCancel != nil {
-			downloadCancel()
-		}
 	}
-	// Show the window but keep main content hidden until SAM is initialized
-	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(800, 600))
-	myWindow.Show()
 
-	// Show the window and start the GUI event loop
-	myWindow.ShowAndRun()
+	writer := metainfo.NewWriter(outputPath, info, mode)
+	dm := download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
+	pm := peer.NewPeerManager(dm)
+
+	progressBinding := binding.NewFloat()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	torrentItem := &TorrentItem{
+		Name:            info.Name,
+		Status:          "Initializing",
+		Progress:        0,
+		DownloadSpeed:   0,
+		UploadSpeed:     0,
+		Downloaded:      0,
+		Uploaded:        0,
+		Size:            info.TotalLength(),
+		ETA:             "",
+		Peers:           0,
+		dm:              dm,
+		pm:              pm,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		progressBinding: progressBinding,
+	}
+
+	// Add to torrent list
+	torrentListLock.Lock()
+	torrentList = append(torrentList, torrentItem)
+	torrentListBinding.Set(torrentListToAnySlice(torrentList))
+	torrentListLock.Unlock()
+
+	// Start the download in a separate goroutine
+	go func(torrent *TorrentItem) {
+		defer func() {
+			if torrent.dm.IsFinished() {
+				torrent.Status = "Seeding"
+				myApp.SendNotification(&fyne.Notification{
+					Title:   "Download Complete",
+					Content: fmt.Sprintf("%s has finished downloading.", torrent.Name),
+				})
+			} else {
+				torrent.Status = "Stopped"
+				myApp.SendNotification(&fyne.Notification{
+					Title:   "Download Stopped",
+					Content: fmt.Sprintf("%s download was stopped.", torrent.Name),
+				})
+			}
+		}()
+
+		// Start the listener for incoming connections (seeding)
+		go func() {
+			err := startPeerListener(&mi, downloadDir)
+			if err != nil {
+				log.WithError(err).Error("Failed to start peer listener")
+			}
+		}()
+
+		// Progress updater
+		progressTicker := time.NewTicker(1 * time.Second)
+		defer progressTicker.Stop()
+		var prevDownloaded int64 = 0
+		var prevUploaded int64 = 0
+		for {
+			select {
+			case <-progressTicker.C:
+				torrent.dm.LogProgress()
+				progress := torrent.dm.Progress() / 100
+				torrent.Progress = progress
+				// torrent.progressBinding.Set(progress) // No longer needed with direct updates
+
+				currentDownloaded := atomic.LoadInt64(&torrent.dm.Downloaded)
+				currentUploaded := atomic.LoadInt64(&torrent.dm.Uploaded)
+				bytesDownloaded := currentDownloaded - prevDownloaded
+				bytesUploaded := currentUploaded - prevUploaded
+				prevDownloaded = currentDownloaded
+				prevUploaded = currentUploaded
+
+				downloadSpeedKBps := float64(bytesDownloaded) / 1024
+				uploadSpeedKBps := float64(bytesUploaded) / 1024
+
+				torrent.DownloadSpeed = downloadSpeedKBps
+				torrent.UploadSpeed = uploadSpeedKBps
+				torrent.Downloaded = currentDownloaded
+				torrent.Uploaded = currentUploaded
+
+				// Estimate ETA
+				if downloadSpeedKBps > 0 {
+					remainingBytes := torrent.Size - currentDownloaded
+					etaSeconds := float64(remainingBytes) / (downloadSpeedKBps * 1024)
+					torrent.ETA = fmt.Sprintf("%s", time.Duration(etaSeconds)*time.Second)
+				} else {
+					torrent.ETA = "∞"
+				}
+
+				torrent.Status = "Downloading"
+
+				// Update UI
+
+				torrentListBinding.Set(torrentListToAnySlice(torrentList))
+				torrentListView.Refresh()
+
+			case <-torrent.ctx.Done():
+				return
+			}
+		}
+	}(torrentItem)
+
+	// Get peers from trackers
+	allPeers, err := getAllPeers(&mi)
+	if err != nil {
+		ShowError("Failed to get peers from any tracker", err, myWindow)
+		return
+	}
+
+	uniquePeers := peer.RemoveDuplicatePeers(allPeers)
+
+	// Limit the number of connections based on user settings
+	maxPeers := maxConnections
+	if len(uniquePeers) < maxPeers {
+		maxPeers = len(uniquePeers)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < maxPeers; i++ {
+		wg.Add(1)
+		go func(peerHash []byte, index int) {
+			defer wg.Done()
+			retryConnect(torrentItem.ctx, peerHash, index, &mi, torrentItem.dm, torrentItem.pm, maxRetries, initialDelay)
+		}(uniquePeers[i], i)
+	}
+
+	wg.Wait()
+
+	if torrentItem.dm.IsFinished() {
+		dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name), myWindow)
+		torrentItem.Status = "Seeding"
+	} else {
+		dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
+		torrentItem.Status = "Incomplete"
+	}
+}
+
+// showTorrentDetails displays detailed information about a torrent
+func showTorrentDetails(torrent *TorrentItem, myWindow fyne.Window) {
+	// Create a new window or dialog to show torrent details
+	dialog.ShowCustom(fmt.Sprintf("Details - %s", torrent.Name), "Close", widget.NewLabel("Torrent details here."), myWindow)
 }
 
 func ShowDisclaimer(app fyne.App, parent fyne.Window) {
@@ -749,6 +874,100 @@ func ShowSAMSettingsDialog(myApp fyne.App, myWindow fyne.Window, onComplete func
 			}, myWindow)
 		}
 	}, myWindow)
+}
+
+// drawLine draws a line on an image using Bresenham's algorithm
+func drawLine(img *image.RGBA, x0, y0, x1, y1 int, col color.Color) {
+	dx := abs(x1 - x0)
+	dy := -abs(y1 - y0)
+	sx := -1
+	if x0 < x1 {
+		sx = 1
+	}
+	sy := -1
+	if y0 < y1 {
+		sy = 1
+	}
+	err := dx + dy
+	for {
+		if x0 >= 0 && x0 < img.Rect.Max.X && y0 >= 0 && y0 < img.Rect.Max.Y {
+			img.Set(x0, y0, col)
+		}
+		if x0 == x1 && y0 == y1 {
+			break
+		}
+		e2 := 2 * err
+		if e2 >= dy {
+			err += dy
+			x0 += sx
+		}
+		if e2 <= dx {
+			err += dx
+			y0 += sy
+		}
+	}
+}
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func saveLogsToFile() {
+	saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
+		if err != nil {
+			ShowError("Save Logs Error", err, myWindow)
+			return
+		}
+		if writer == nil {
+			// User canceled the dialog
+			return
+		}
+		logFilePath := writer.URI().Path()
+		writer.Close() // Close immediately after getting the path
+
+		if logFilePath == "" {
+			ShowError("Invalid File Path", fmt.Errorf("No file path selected"), myWindow)
+			return
+		}
+
+		// Open the selected log file
+		file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			ShowError("Failed to Open Log File", err, myWindow)
+			return
+		}
+
+		// Safely update the log output
+		logFileMux.Lock()
+		defer logFileMux.Unlock()
+
+		// Write the contents of logBuffer to the file
+		_, err = file.Write(logBuffer.Bytes())
+		if err != nil {
+			ShowError("Failed to Write Logs to File", err, myWindow)
+			file.Close()
+			return
+		}
+
+		// If a log file was previously open, close it
+		if logFile != nil {
+			logFile.Close()
+		}
+
+		logFile = file
+		// Set Logrus to write to os.Stderr, logBuffer, and the file
+		log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer, logFile))
+		log.Info("Logging to file enabled")
+		dialog.ShowInformation("Logging Enabled", fmt.Sprintf("Logs are being saved to:\n%s", logFilePath), myWindow)
+	}, myWindow)
+
+	// Set the default file name
+	saveDialog.SetFileName("eeptorrent.log")
+
+	// Show the save dialog
+	saveDialog.Show()
 }
 
 // getAllPeers retrieves peers from multiple trackers.

@@ -19,37 +19,15 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 import (
-	"bytes"
 	"eeptorrent/lib/gui"
 	"eeptorrent/lib/i2p"
 	"github.com/sirupsen/logrus"
-	"io"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
-
 	"os"
+	"os/signal"
+	"syscall"
 )
 
-var (
-	log          = logrus.StandardLogger()
-	maxRetries   = 100
-	initialDelay = 2 * time.Second
-	logFile      *os.File
-	logFileMux   sync.Mutex
-	logBuffer    bytes.Buffer
-)
-
-func init() {
-	// Configure logrus
-	log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-		DisableColors: false,
-	})
-	log.SetOutput(io.MultiWriter(os.Stderr, &logBuffer))
-	log.SetLevel(logrus.DebugLevel)
-}
+var log = logrus.StandardLogger()
 
 func main() {
 	// Set up panic recovery
