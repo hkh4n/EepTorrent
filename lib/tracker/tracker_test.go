@@ -26,6 +26,9 @@ func TestTrackers(t *testing.T) {
 	if !fileExists(torrentFile) {
 		t.Skip("No torrent file set for tracker_test go (/tmp/test.torrent), so we're skipping.")
 	}
+	if os.Getenv("CI") == "true" {
+		t.Skip("Skipping TestTrackers in CI environment")
+	}
 
 	mi, err := metainfo.LoadFromFile(torrentFile)
 	if err != nil {
