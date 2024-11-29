@@ -185,7 +185,7 @@ func TestBench1KB(t *testing.T) {
 		wg.Add(1)
 		go func(peerHash []byte, idx int) {
 			defer wg.Done()
-			peer.ConnectToPeer(ctx, peerHash, idx, &mi, dm)
+			peer.ConnectToPeer(ctx, peerHash, idx, &mi, dm, pm)
 		}(uniquePeers[i], i)
 	}
 
@@ -422,7 +422,7 @@ func TestBench1MB(t *testing.T) {
 		wg.Add(1)
 		go func(peerHash []byte, idx int) {
 			defer wg.Done()
-			peer.ConnectToPeer(ctx, peerHash, idx, &mi, dm)
+			peer.ConnectToPeer(ctx, peerHash, idx, &mi, dm, pm)
 		}(uniquePeers[i], i)
 	}
 
