@@ -26,6 +26,7 @@ import (
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
+	"eeptorrent/lib/upload"
 	"eeptorrent/lib/util"
 	"eeptorrent/lib/util/logo"
 	"fmt"
@@ -729,22 +730,11 @@ func startPeerListener(mi *metainfo.MetaInfo, downloadDir string) error {
 
 	writer := metainfo.NewWriter(outputPath, info, mode)
 
-	// Initialize the DownloadManager for the seeder
-	dm := download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
+	// Initialize the UploadManager for the seeder
+	um := upload.NewUploadManager(writer, info, downloadDir)
 
-	// Mark all pieces as complete since this is a seeder
-	dm.Mu.Lock()
-	for i := 0; i < dm.TotalPieces; i++ {
-		dm.Bitfield.Set(uint32(i))
-		piece := dm.Pieces[i]
-		for j := range piece.Blocks {
-			piece.Blocks[j] = true
-		}
-	}
-	dm.Mu.Unlock()
-
-	// Initialize the PeerManager
-	pm := peer.NewPeerManager(dm)
+	// Initialize the PeerManager for uploading
+	pm := peer.NewPeerManager(nil) // Pass nil since we're not downloading
 
 	// Start accepting incoming connections
 	for {
@@ -774,12 +764,12 @@ func startPeerListener(mi *metainfo.MetaInfo, downloadDir string) error {
 			pc := pp.NewPeerConn(conn, peerId, mi.InfoHash())
 			pc.Timeout = 30 * time.Second
 
-			// Add peer to download manager
-			dm.AddPeer(pc)
-			defer dm.RemovePeer(pc)
+			// Add peer to UploadManager
+			um.AddPeer(pc)
+			defer um.RemovePeer(pc)
 
 			// Handle the peer connection in seeding mode
-			err = handleSeedingPeer(pc, dm, pm)
+			err = handleSeedingPeer(pc, um, pm)
 			if err != nil {
 				log.WithError(err).Error("Error handling seeding peer")
 			}
@@ -789,11 +779,11 @@ func startPeerListener(mi *metainfo.MetaInfo, downloadDir string) error {
 
 // handleSeedingPeer manages an incoming seeding peer connection.
 // It handles requests for pieces, manages upload interactions, and ensures robust error handling.
-func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.PeerManager) error {
+func handleSeedingPeer(pc *pp.PeerConn, um *upload.UploadManager, pm *peer.PeerManager) error {
 	log := log.WithField("peer", pc.RemoteAddr().String())
 	log.Info("Handling new seeding connection")
 
-	// Add peer to manager
+	// Add peer to PeerManager
 	pm.Mu.Lock()
 	if pm.Peers == nil {
 		pm.Peers = make(map[*pp.PeerConn]*peer.PeerState)
@@ -807,18 +797,18 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 		pm.Mu.Unlock()
 	}()
 
-	// Initially unchoke peer to allow requests
-	err := pc.SendUnchoke()
-	if err != nil {
-		log.WithError(err).Error("Failed to send unchoke to peer")
-		return fmt.Errorf("failed to send unchoke: %v", err)
-	}
-
-	// Send our bitfield so they know what pieces we have
-	err = pc.SendBitfield(dm.Bitfield)
+	// Send bitfield to the peer
+	err := pc.SendBitfield(um.Bitfield)
 	if err != nil {
 		log.WithError(err).Error("Failed to send bitfield to peer")
 		return fmt.Errorf("failed to send bitfield: %v", err)
+	}
+
+	// Unchoke the peer to allow requests
+	err = pc.SendUnchoke()
+	if err != nil {
+		log.WithError(err).Error("Failed to send unchoke to peer")
+		return fmt.Errorf("failed to send unchoke: %v", err)
 	}
 
 	// Main message handling loop
@@ -835,36 +825,26 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 
 		switch msg.Type {
 		case pp.MTypeRequest:
-			// Validate request
-			if msg.Begin+msg.Length > uint32(dm.Writer.Info().PieceLength) {
-				log.WithFields(logrus.Fields{
-					"index":  msg.Index,
-					"begin":  msg.Begin,
-					"length": msg.Length,
-				}).Warn("Received invalid piece request")
-				continue
-			}
-
-			// Get the requested block
-			blockData, err := dm.GetBlock(msg.Index, msg.Begin, msg.Length)
+			// Handle piece requests from the peer
+			blockData, err := um.GetBlock(msg.Index, msg.Begin, msg.Length)
 			if err != nil {
 				log.WithError(err).Error("Failed to retrieve requested block")
-				// Optionally, send an error message to the peer or choke the peer
 				continue
 			}
 
-			// Send the piece
+			// Send the piece to the peer
 			err = pc.SendPiece(msg.Index, msg.Begin, blockData)
 			if err != nil {
 				log.WithError(err).Error("Failed to send piece to peer")
-				// Optionally, handle the error, e.g., by chocking the peer
 				continue
 			}
 
 			// Update upload stats
 			uploadSize := int64(len(blockData))
-			atomic.AddInt64(&dm.Uploaded, uploadSize)
-			pm.UpdatePeerStats(pc, 0, uploadSize) // Update upload stats in PeerManager
+			um.Mu.Lock()
+			um.Uploaded += uploadSize
+			um.Mu.Unlock()
+			pm.UpdatePeerStats(pc, 0, uploadSize)
 
 			log.WithFields(logrus.Fields{
 				"index": msg.Index,
@@ -873,12 +853,14 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 			}).Debug("Successfully sent piece to peer")
 
 		case pp.MTypeInterested:
+			// Handle interested messages
 			pm.OnPeerInterested(pc)
-			log.Debug("Peer expressed interest in downloading")
+			log.Debug("Peer is interested in downloading")
 
 		case pp.MTypeNotInterested:
+			// Handle not interested messages
 			pm.OnPeerNotInterested(pc)
-			log.Debug("Peer expressed lack of interest in downloading")
+			log.Debug("Peer is not interested in downloading")
 
 		case pp.MTypeHave:
 			// Update peer's bitfield
@@ -890,15 +872,16 @@ func handleSeedingPeer(pc *pp.PeerConn, dm *download.DownloadManager, pm *peer.P
 			}
 
 		case pp.MTypeBitField:
+			// Update peer's bitfield
 			pc.BitField = msg.BitField
 			log.WithField("pieces", pc.BitField.String()).Debug("Received peer's bitfield")
 
 		case pp.MTypeCancel:
-			// Optionally handle cancel requests if needed
+			// Handle cancel requests if needed
 			log.Debug("Received 'Cancel' message from peer (ignored in seeding)")
 
 		default:
-			// Log unhandled message types at debug level
+			// Log unhandled message types
 			log.WithField("message_type", msg.Type.String()).Debug("Received unhandled message type from peer")
 		}
 	}
