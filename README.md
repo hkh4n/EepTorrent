@@ -3,7 +3,7 @@
 ## ⚠️ Disclaimer ⚠️ (PLEASE READ BEFORE USING)
 This is a work in progress and is considered **pre-alpha** software, meaning it doesn't even have the core functions yet. Use at your own risk and be sure to update frequently.
 
-### As of 11/24/2024, this is in crude working condition. It's advised NOT to use at this time. But you can out of curiosity.
+### As of 11/28/2024, this is in a non-functional state. It's advised NOT to use at this time. But you can out of curiosity. Please check back soon.
 
 ## Building
 
