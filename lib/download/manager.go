@@ -341,6 +341,14 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 		dm.Bitfield.Set(index)
 		logrus.WithField("piece_index", index).Info("Piece verified and marked as complete")
 
+		// Write piece to disk
+		err = dm.WritePieceToDisk(index)
+		if err != nil {
+			logrus.Errorf("Failed to write piece %d to disk: %v", index, err)
+			return err
+		}
+		logrus.WithField("piece_index", index).Info("Piece written to disk successfully")
+
 		// Broadcast 'Have' message to peers
 		dm.BroadcastHave(index)
 	}
@@ -364,6 +372,65 @@ func (dm *DownloadManager) IsPieceComplete(index int) bool {
 	return true
 }
 
+// WritePieceToDisk writes the piece data to disk.
+func (dm *DownloadManager) WritePieceToDisk(index uint32) error {
+	logrus.WithField("piece_index", index).Debug("Writing piece to disk")
+
+	info := dm.Writer.Info()
+	piece := dm.Pieces[index]
+
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+
+	// Assemble completeData
+	completeData := make([]byte, 0, info.PieceLength)
+	for _, data := range piece.BlockData {
+		completeData = append(completeData, data...)
+	}
+
+	// Determine the file offset
+	offset := int64(index) * info.PieceLength
+
+	// Single-file torrent
+	if len(info.Files) == 0 {
+		filePath := filepath.Join(dm.DownloadDir, info.Name)
+		logrus.WithField("file_path", filePath).Debug("Writing to single-file torrent")
+
+		// Ensure the directory exists
+		err := os.MkdirAll(dm.DownloadDir, os.ModePerm)
+		if err != nil {
+			logrus.Errorf("Failed to create download directory: %v", err)
+			return err
+		}
+
+		// Open file for writing
+		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			logrus.Errorf("Failed to open file for writing: %v", err)
+			return err
+		}
+		defer file.Close()
+
+		// Write data
+		n, err := file.WriteAt(completeData, offset)
+		if err != nil {
+			logrus.Errorf("Failed to write data to file: %v", err)
+			return err
+		}
+		if n != len(completeData) {
+			logrus.Errorf("Incomplete write: wrote %d bytes, expected %d bytes", n, len(completeData))
+			return fmt.Errorf("incomplete write for piece %d", index)
+		}
+	} else {
+		// Multi-file torrent
+		// Implement writing logic for multi-file torrents if applicable
+		logrus.Error("Multi-file torrents are not yet supported in WritePieceToDisk")
+		return fmt.Errorf("multi-file torrents are not supported")
+	}
+
+	logrus.WithField("piece_index", index).Debug("Piece written to disk successfully")
+	return nil
+}
 func (dm *DownloadManager) NeedPiecesFrom(pc *pp.PeerConn) bool {
 	dm.Mu.Lock()
 	defer dm.Mu.Unlock()
