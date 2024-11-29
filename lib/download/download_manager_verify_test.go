@@ -12,7 +12,6 @@ import (
 const BlockSize = downloader.BlockSize
 
 func TestVerifyPiece(t *testing.T) {
-	// Setup
 	pieceLength := int64(256 * 1024)  // 256KB
 	totalLength := int64(1024 * 1024) // 1MB
 	numPieces := 4
@@ -51,17 +50,18 @@ func TestVerifyPiece(t *testing.T) {
 	}
 
 	// Verify the piece
-	valid := dm.VerifyPiece(pieceIndex)
+	valid, err := dm.VerifyPiece(pieceIndex)
+	assert.NoError(t, err, "VerifyPiece should not return error for valid piece")
 	assert.True(t, valid, "Piece verification should succeed for correct data")
 
-	// Introduce corruption in one block
-	peerIndex := 0
-	offset := uint32(peerIndex) * BlockSize
-	corruptedBlock := []byte("corrupted data")
-	err := dm.OnBlock(pieceIndex, offset, corruptedBlock)
-	assert.NoError(t, err, "OnBlock should not return error even if data is corrupted")
+	// Introduce corruption in one block by directly modifying BlockData
+	corruptBlockNum := 0 // Corrupt the first block
+	dm.Pieces[pieceIndex].Mu.Lock()
+	dm.Pieces[pieceIndex].BlockData[corruptBlockNum] = []byte("corrupted data")
+	dm.Pieces[pieceIndex].Mu.Unlock()
 
 	// Verify the piece again
-	valid = dm.VerifyPiece(pieceIndex)
+	valid, err = dm.VerifyPiece(pieceIndex)
+	assert.Error(t, err, "VerifyPiece should return error due to corrupted block")
 	assert.False(t, valid, "Piece verification should fail due to corrupted block")
 }

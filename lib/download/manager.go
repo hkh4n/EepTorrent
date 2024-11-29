@@ -301,7 +301,11 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 
 	// Check if the piece is complete and verify
 	if dm.isPieceComplete(piece) {
-		if !dm.VerifyPiece(index) {
+		verified, err := dm.VerifyPiece(index)
+		if err != nil {
+			logrus.Errorf("Failed to verify piece: %v", err)
+		}
+		if !verified {
 			logrus.Panic("Piece verification failed")
 		}
 		// Broadcast 'Have' message to peers
@@ -594,7 +598,11 @@ func (dm *DownloadManager) FinalizeDownload() error {
 	// Verify each piece
 	for _, piece := range dm.Pieces {
 		piece.Mu.Lock()
-		if !dm.VerifyPiece(piece.Index) {
+		verified, err := dm.VerifyPiece(piece.Index)
+		if err != nil {
+			logrus.Errorf("Failed to verify piece: %v", err)
+		}
+		if !verified {
 			piece.Mu.Unlock()
 			log.Errorf("Piece %d verification failed", piece.Index)
 			return fmt.Errorf("piece %d verification failed", piece.Index)
@@ -615,7 +623,7 @@ func (dm *DownloadManager) FinalizeDownload() error {
 
 // VerifyPiece verifies the integrity of a downloaded piece.
 // Assumes that the caller already holds piece.Mu.Lock().
-func (dm *DownloadManager) VerifyPiece(index uint32) bool {
+func (dm *DownloadManager) VerifyPiece(index uint32) (bool, error) {
 	logrus.WithField("piece_index", index).Debug("Verifying piece")
 
 	info := dm.Writer.Info()
@@ -627,14 +635,10 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 			"piece_index":  index,
 			"total_pieces": totalPieces,
 		}).Error("Invalid piece index for verification")
-		return false
+		return false, fmt.Errorf("invalid piece index: %d", index)
 	}
 
 	piece := dm.Pieces[index]
-
-	// Removed locking to prevent deadlock
-	// piece.Mu.Lock()
-	// defer piece.Mu.Unlock()
 
 	// Assemble completeData in the correct order
 	completeData := make([]byte, 0, info.PieceLength)
@@ -644,7 +648,7 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 				"piece_index": index,
 				"block_num":   blockNum,
 			}).Error("Missing block data for verification")
-			return false
+			return false, fmt.Errorf("missing block data for piece %d, block %d", index, blockNum)
 		}
 		completeData = append(completeData, piece.BlockData[blockNum]...)
 	}
@@ -659,11 +663,11 @@ func (dm *DownloadManager) VerifyPiece(index uint32) bool {
 			"piece_index":   index,
 			"expected_hash": fmt.Sprintf("%x", expectedHash),
 			"actual_hash":   fmt.Sprintf("%x", actualHash),
-		}).Panic("Piece hash mismatch (memory verification)")
-		return false
+		}).Error("Piece hash mismatch (memory verification)")
+		return false, fmt.Errorf("piece hash mismatch for piece %d", index)
 	}
 	logrus.Info("===FOUND CORRECT HASH===")
-	return true
+	return true, nil
 }
 
 // ReadPiece reads the data of a specific piece from disk.
