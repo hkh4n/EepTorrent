@@ -1,8 +1,10 @@
 package download
 
 import (
+	"github.com/go-i2p/go-i2p-bt/downloader"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,13 +27,17 @@ func TestReserveBlock(t *testing.T) {
 }
 
 func TestReserveBlockConcurrency(t *testing.T) {
-	// Setup
-	writer := NewMockWriter(metainfo.Info{})
-	dm := NewDownloadManager(writer, 1024*1024, 256*1024, 4, "/tmp/download")
-	pieceIndex := uint32(1)
-	offset := uint32(512 * 1024) // Assume BlockSize is 256KB
+	info := metainfo.Info{
+		PieceLength: 256 * 1024, // 256 KB
+		Pieces:      make(metainfo.Hashes, 4),
+	}
 
-	var successCount int
+	writer := NewMockWriter(info)
+	dm := NewDownloadManager(writer, 1024*1024, 256*1024, 4, "/tmp/download") // 1 MB total length
+	pieceIndex := uint32(1)
+	offset := uint32(0) // Corrected offset within the piece
+
+	var successCount int32
 	var wg sync.WaitGroup
 	numGoroutines := 10
 
@@ -41,11 +47,16 @@ func TestReserveBlockConcurrency(t *testing.T) {
 			defer wg.Done()
 			if dm.reserveBlock(pieceIndex, offset) {
 				// Only one goroutine should succeed
-				successCount++
+				atomic.AddInt32(&successCount, 1)
 			}
 		}()
 	}
 
 	wg.Wait()
-	assert.Equal(t, 1, successCount, "Only one goroutine should successfully reserve the block")
+	assert.Equal(t, int32(1), successCount, "Only one goroutine should successfully reserve the block")
+
+	piece := dm.Pieces[pieceIndex]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+	assert.True(t, piece.Blocks[offset/downloader.BlockSize], "Block should be reserved")
 }
