@@ -278,9 +278,8 @@ func TestPieceVerification(t *testing.T) {
 
 		// Verify the piece
 		piece := dm.Pieces[pieceIndex]
-		piece.Mu.Lock()
+
 		isComplete := dm.IsPieceComplete(int(piece.Index))
-		piece.Mu.Unlock()
 
 		assert.True(t, isComplete)
 	})
@@ -293,10 +292,7 @@ func TestPieceVerification(t *testing.T) {
 		err := dm.OnBlock(pieceIndex, 0, blockData)
 		assert.NoError(t, err)
 
-		piece := dm.Pieces[pieceIndex]
-		piece.Mu.Lock()
-		isComplete := dm.IsPieceComplete(int(piece.Index))
-		piece.Mu.Unlock()
+		isComplete := dm.IsPieceComplete(int(pieceIndex))
 
 		assert.False(t, isComplete)
 	})

@@ -247,6 +247,12 @@ func (dm *DownloadManager) IsFinished() bool {
 
 // OnBlock handles the reception of a block from a peer.
 func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) error {
+	logrus.WithFields(logrus.Fields{
+		"piece_index": index,
+		"begin":       begin,
+		"block_size":  len(block),
+	}).Debug("OnBlock called")
+
 	// Validate piece index before accessing array
 	if int(index) >= len(dm.Pieces) {
 		return fmt.Errorf("invalid piece index: %d", index)
@@ -265,9 +271,12 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 	dm.Mu.Lock()
 	piece := dm.Pieces[index]
 	dm.Mu.Unlock()
+	logrus.WithField("piece_index", index).Debug("Retrieved piece from DownloadManager")
 
 	piece.Mu.Lock()
-	defer piece.Mu.Unlock()
+	logrus.WithField("piece_index", index).Debug("Piece locked in OnBlock")
+	// Defer unlocking the piece mutex, but we'll unlock it earlier to avoid deadlocks
+	// defer piece.Mu.Unlock()
 
 	// Calculate block number based on 'begin' offset
 	blockNum := begin / downloader.BlockSize
@@ -280,6 +289,7 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 			"block_num":    blockNum,
 			"total_blocks": len(piece.Blocks),
 		}).Error("Invalid block number")
+		piece.Mu.Unlock()
 		return fmt.Errorf("invalid block number %d for piece %d", blockNum, index)
 	}
 
@@ -289,25 +299,48 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 			"piece_index": index,
 			"block_num":   blockNum,
 		}).Warn("Duplicate block received")
+		piece.Mu.Unlock()
 		return nil // Ignore duplicate blocks
 	}
 
 	// Store the block data
 	piece.BlockData[blockNum] = block
 	piece.Blocks[blockNum] = true
+	logrus.WithFields(logrus.Fields{
+		"piece_index": index,
+		"block_num":   blockNum,
+	}).Debug("Stored block data")
 
 	// Update total downloaded bytes
 	atomic.AddInt64(&dm.Downloaded, int64(len(block)))
 
-	// Check if the piece is complete and verify
-	if dm.IsPieceComplete(int(index)) {
+	// Check if the piece is complete
+	isComplete := true
+	for _, blockReceived := range piece.Blocks {
+		if !blockReceived {
+			isComplete = false
+			break
+		}
+	}
+	piece.Mu.Unlock()
+	logrus.WithField("piece_index", index).Debug("Piece unlocked in OnBlock")
+
+	if isComplete {
+		logrus.WithField("piece_index", index).Debug("Piece is complete, proceeding to verify")
+		// Proceed to verify the piece
 		verified, err := dm.VerifyPiece(index)
 		if err != nil {
 			logrus.Errorf("Failed to verify piece: %v", err)
+			return err
 		}
 		if !verified {
 			logrus.Panic("Piece verification failed")
+			return fmt.Errorf("piece verification failed for piece %d", index)
 		}
+		// Update bitfield to indicate we have the piece
+		dm.Bitfield.Set(index)
+		logrus.WithField("piece_index", index).Info("Piece verified and marked as complete")
+
 		// Broadcast 'Have' message to peers
 		dm.BroadcastHave(index)
 	}
@@ -317,8 +350,9 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 
 // isPieceComplete checks if all blocks in a PieceStatus have been received.
 func (dm *DownloadManager) IsPieceComplete(index int) bool {
-	dm.Mu.Lock()
-	defer dm.Mu.Unlock()
+	if index < 0 || index >= len(dm.Pieces) {
+		return false
+	}
 	piece := dm.Pieces[index]
 	piece.Mu.Lock()
 	defer piece.Mu.Unlock()

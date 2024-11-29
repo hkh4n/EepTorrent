@@ -12,6 +12,7 @@ import (
 const BlockSize = downloader.BlockSize
 
 func TestVerifyPiece(t *testing.T) {
+	t.Log("Starting TestVerifyPiece")
 	pieceLength := int64(256 * 1024)  // 256KB
 	totalLength := int64(1024 * 1024) // 1MB
 	numPieces := 4
@@ -45,9 +46,11 @@ func TestVerifyPiece(t *testing.T) {
 		for k := range block {
 			block[k] = byte(k % 256)
 		}
+		t.Logf("Calling OnBlock for piece %d, offset %d", pieceIndex, offset)
 		err := dm.OnBlock(pieceIndex, offset, block)
 		assert.NoError(t, err, "OnBlock should not return error for valid block")
 	}
+	t.Log("All blocks received, verifying piece")
 
 	// Verify the piece
 	valid, err := dm.VerifyPiece(pieceIndex)
