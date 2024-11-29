@@ -5,7 +5,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"github.com/wcharczuk/go-chart"
-	"log"
 	"os"
 	"sync"
 )
