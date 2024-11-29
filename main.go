@@ -96,7 +96,7 @@ func main() {
 	gui.ShowDisclaimer(myApp, myWindow)
 
 	var dm *download.DownloadManager
-	var pm *peer.PeerManager
+	//var pm *peer.PeerManager
 	var wg sync.WaitGroup
 	var downloadInProgress bool
 	var downloadCancel context.CancelFunc
@@ -465,17 +465,30 @@ func main() {
 				}
 
 				writer := metainfo.NewWriter(outputPath, info, mode)
-				//dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, len(info.Pieces))
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
-				pm = peer.NewPeerManager(dm)
+
+				// If we're a seeder, set all pieces as complete
+				/*
+					dm.Mu.Lock()
+					for i := 0; i < dm.TotalPieces; i++ {
+						dm.Bitfield.Set(uint32(i))
+						piece := dm.Pieces[i]
+						for j := range piece.Blocks {
+							piece.Blocks[j] = true
+						}
+					}
+					dm.Mu.Unlock()
+
+				*/
+
+				//pm := peer.NewPeerManager(dm)
 				progressTicker := time.NewTicker(1 * time.Second)
 				ctx, cancel := context.WithCancel(context.Background())
 				downloadCancel = cancel
 
 				// Start the listener for incoming connections (seeding)
-
 				go func() {
-					err := startPeerListener(dm, &mi, pm)
+					err := startPeerListener(&mi, downloadDir)
 					if err != nil {
 						log.WithError(err).Error("Failed to start peer listener")
 					}
@@ -680,7 +693,7 @@ func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.
 	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
 }
 
-func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *peer.PeerManager) error {
+func startPeerListener(mi *metainfo.MetaInfo, downloadDir string) error {
 	listenerSession := i2p.GlobalStreamSession
 
 	listener, err := listenerSession.Listen()
@@ -691,19 +704,49 @@ func startPeerListener(dm *download.DownloadManager, mi *metainfo.MetaInfo, pm *
 
 	log.Info("Started seeding listener on address: ", listenerSession.Addr().Base32())
 
-	// Start a goroutine to periodically run the seeding algorithm
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
+	// Initialize the file writer for the seeder
+	var outputPath string
+	var mode os.FileMode
+	info, err := mi.Info()
+	if err != nil {
+		return fmt.Errorf("Failed to get torrent info: %v", err)
+	}
 
-		for range ticker.C {
-			if dm.IsFinished() {
-				pm.HandleSeeding()
-			}
+	if len(info.Files) == 0 {
+		// Single-file torrent
+		outputPath = filepath.Join(downloadDir, info.Name)
+		mode = 0644
+	} else {
+		// Multi-file torrent
+		outputPath = filepath.Join(downloadDir, info.Name)
+		mode = 0755
+		// Create the directory if it doesn't exist
+		err := os.MkdirAll(outputPath, mode)
+		if err != nil && !os.IsExist(err) {
+			return fmt.Errorf("Failed to create output directory: %v", err)
 		}
-	}()
+	}
 
-	// Accept incoming connections
+	writer := metainfo.NewWriter(outputPath, info, mode)
+
+	// Initialize the DownloadManager for the seeder
+	dm := download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
+
+	// Mark all pieces as complete since this is a seeder
+	dm.Mu.Lock()
+	for i := 0; i < dm.TotalPieces; i++ {
+		dm.Bitfield.Set(uint32(i))
+		piece := dm.Pieces[i]
+		for j := range piece.Blocks {
+			piece.Blocks[j] = true
+		}
+	}
+	dm.Mu.Unlock()
+
+	// Initialize the PeerManager
+	pm := peer.NewPeerManager(dm)
+
+	// Start accepting incoming connections
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

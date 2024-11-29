@@ -300,7 +300,7 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 	atomic.AddInt64(&dm.Downloaded, int64(len(block)))
 
 	// Check if the piece is complete and verify
-	if dm.isPieceComplete(piece) {
+	if dm.IsPieceComplete(int(index)) {
 		verified, err := dm.VerifyPiece(index)
 		if err != nil {
 			logrus.Errorf("Failed to verify piece: %v", err)
@@ -316,9 +316,14 @@ func (dm *DownloadManager) OnBlock(index uint32, begin uint32, block []byte) err
 }
 
 // isPieceComplete checks if all blocks in a PieceStatus have been received.
-func (dm *DownloadManager) isPieceComplete(piece *PieceStatus) bool {
-	for _, received := range piece.Blocks {
-		if !received {
+func (dm *DownloadManager) IsPieceComplete(index int) bool {
+	dm.Mu.Lock()
+	defer dm.Mu.Unlock()
+	piece := dm.Pieces[index]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+	for _, blockReceived := range piece.Blocks {
+		if !blockReceived {
 			return false
 		}
 	}
@@ -896,9 +901,16 @@ func (dm *DownloadManager) GetBlock(pieceIndex, offset, length uint32) ([]byte, 
 	piece.Blocks[offset/downloader.BlockSize] = true
 
 	// Example: Check if the piece is complete
-	if dm.isPieceComplete(piece) {
-		log.Info("Piece completed")
-		// Additional logic for completed piece
+	if dm.IsPieceComplete(int(pieceIndex)) {
+		verified, err := dm.VerifyPiece(pieceIndex)
+		if err != nil {
+			logrus.Errorf("Failed to verify piece: %v", err)
+		}
+		if !verified {
+			logrus.Panic("Piece verification failed")
+		}
+		// Broadcast 'Have' message to peers
+		dm.BroadcastHave(pieceIndex)
 	}
 
 	log.Debug("Successfully retrieved block data")
