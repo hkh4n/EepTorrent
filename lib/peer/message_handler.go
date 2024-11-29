@@ -189,7 +189,11 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 
 		//if dm.IsPieceComplete(msg.Index) { // Ensure this method accurately checks piece completion
 		// Call VerifyPiece to check if the piece is complete and valid
-		if dm.VerifyPiece(msg.Index) {
+		verified, err := dm.VerifyPiece(msg.Index)
+		if err != nil {
+			logrus.Errorf("Failed to verify piece: %v", err)
+		}
+		if verified {
 			// Send 'Have' message to inform peers about the completed piece
 			err := pc.SendHave(msg.Index)
 			if err != nil {
