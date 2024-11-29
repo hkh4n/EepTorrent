@@ -2,11 +2,14 @@ package download
 
 import (
 	"crypto/sha1"
+	"errors"
+	"fmt"
 	"github.com/go-i2p/go-i2p-bt/downloader"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -16,9 +19,10 @@ import (
 // MockWriter implements metainfo.Writer interface for testing
 type MockWriter struct {
 	mock.Mock
-	info metainfo.Info
-	data []byte
-	mu   sync.Mutex
+	info    metainfo.Info
+	data    []byte
+	mu      sync.Mutex
+	written map[uint32]map[uint32][]byte
 }
 
 func NewMockWriter(info metainfo.Info) *MockWriter {
@@ -67,6 +71,63 @@ func (m *MockWriter) Close() error {
 
 func (m *MockWriter) Info() metainfo.Info {
 	return m.info
+}
+
+// blockKey generates a unique key for a block based on pieceIndex and offset.
+func (mw *MockWriter) blockKey(pieceIndex, offset uint32) string {
+	return fmt.Sprintf("piece_%d_offset_%d", pieceIndex, offset)
+}
+
+// ReadBlock simulates reading data from a block.
+// Returns data if the block has been written; otherwise, returns an error.
+// ReadBlock reads data from a specific block identified by pieceIndex and pieceOffset.
+func (mw *MockWriter) ReadBlock(pieceIndex, pieceOffset uint32) ([]byte, error) {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	data, exists := mw.written[pieceIndex][pieceOffset]
+	if !exists {
+		return nil, errors.New("block not found")
+	}
+	return data, nil
+}
+
+// ReadAt implements the io.ReaderAt interface.
+func (mw *MockWriter) ReadAt(p []byte, offset int64) (n int, err error) {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	pieceLength := int64(mw.info.PieceLength)
+	pieceIndex := uint32(offset / pieceLength)
+	pieceOffset := uint32(offset % pieceLength)
+
+	data, exists := mw.written[pieceIndex][pieceOffset]
+	if !exists {
+		return 0, errors.New("block not found")
+	}
+
+	copyLen := len(p)
+	if len(data) < copyLen {
+		copyLen = len(data)
+	}
+	copy(p, data[:copyLen])
+
+	if copyLen < len(p) {
+		return copyLen, io.EOF
+	}
+	return copyLen, nil
+}
+
+// TotalWrittenBlocks returns the total number of written blocks.
+func (mw *MockWriter) TotalWrittenBlocks() int {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	total := 0
+	for _, blocks := range mw.written {
+		total += len(blocks)
+	}
+	return total
 }
 
 func setupTestDownloadManager(t *testing.T) (*DownloadManager, *MockWriter, string) {
