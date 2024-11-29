@@ -467,6 +467,8 @@ func main() {
 
 				writer := metainfo.NewWriter(outputPath, info, mode)
 				dm = download.NewDownloadManager(writer, info.TotalLength(), info.PieceLength, info.CountPieces(), downloadDir)
+				pm := peer.NewPeerManager(dm)
+				defer pm.Shutdown()
 
 				// If we're a seeder, set all pieces as complete
 				/*
@@ -608,7 +610,7 @@ func main() {
 					wg.Add(1)
 					go func(peerHash []byte, index int) {
 						defer wg.Done()
-						retryConnect(ctx, peerHash, index, &mi, dm, maxRetries, initialDelay)
+						retryConnect(ctx, peerHash, index, &mi, dm, pm, maxRetries, initialDelay)
 					}(uniquePeers[i], i)
 				}
 
@@ -656,7 +658,7 @@ func main() {
 // retryConnect attempts to connect to a peer with retry logic.
 // maxRetries: Maximum number of retry attempts.
 // initialDelay: Initial delay before the first retry.
-func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, maxRetries int, initialDelay time.Duration) {
+func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, pm *peer.PeerManager, maxRetries int, initialDelay time.Duration) {
 	delay := initialDelay
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -667,7 +669,7 @@ func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.
 		default:
 		}
 
-		err := peer.ConnectToPeer(ctx, peerHash, index, mi, dm)
+		err := peer.ConnectToPeer(ctx, peerHash, index, mi, dm, pm)
 		if err == nil {
 			log.Infof("Successfully connected to peer %d on attempt %d", index, attempt)
 			return
@@ -887,6 +889,7 @@ func handleSeedingPeer(pc *pp.PeerConn, um *upload.UploadManager, pm *peer.PeerM
 	}
 }
 
+/*
 func handleIncomingConnection(conn net.Conn, dm *download.DownloadManager, mi *metainfo.MetaInfo) {
 	defer conn.Close()
 
@@ -909,3 +912,6 @@ func handleIncomingConnection(conn net.Conn, dm *download.DownloadManager, mi *m
 		log.WithError(err).Error("Error handling incoming peer connection")
 	}
 }
+
+
+*/

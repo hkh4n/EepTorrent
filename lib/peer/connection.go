@@ -39,7 +39,7 @@ import (
 
 var log = logrus.StandardLogger()
 
-func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager) error {
+func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, pm *PeerManager) error {
 	log.WithFields(logrus.Fields{
 		"peer_index": index,
 		"peer_hash":  fmt.Sprintf("%x", peerHash),
@@ -126,7 +126,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	pc.Timeout = 30 * time.Second
 
 	// Start the message handling loop
-	err = HandlePeerConnection(ctx, pc, dm)
+	err = HandlePeerConnection(ctx, pc, dm, pm)
 	if err != nil {
 		log.Errorf("Peer connection error: %v", err)
 		return fmt.Errorf("peer connection error: %v", err)
@@ -134,7 +134,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 	return nil
 }
 
-func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager) error {
+func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager, pm *PeerManager) error {
 	// Create a done channel for cleanup
 	done := make(chan struct{})
 	defer close(done)
@@ -142,7 +142,11 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 	ps := NewPeerState()
 
 	dm.AddPeer(pc)
-	defer dm.RemovePeer(pc)
+	pm.AddPeer(pc)
+	defer func() {
+		dm.RemovePeer(pc)
+		pm.RemovePeer(pc)
+	}()
 
 	err := pc.SendBitfield(dm.Bitfield)
 	if err != nil {
@@ -191,10 +195,27 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 
 				log.WithField("message_type", msg.Type.String()).Debug("Received message from peer")
 
-				if err := handleMessage(pc, msg, dm, ps); err != nil {
+				if err := handleMessage(pc, msg, dm, ps, pm); err != nil {
 					log.WithError(err).Error("Error handling message from peer")
 					return
 				}
+			}
+		}
+	}()
+
+	// Periodically check seeding status
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if dm.IsFinished() {
+					pm.HandleSeeding()
+				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()

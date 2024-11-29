@@ -30,7 +30,7 @@ import (
 
 const BlockSize = downloader.BlockSize // 16KB blocks
 
-func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager, ps *PeerState) error {
+func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager, ps *PeerState, pm *PeerManager) error {
 	log := log.WithFields(logrus.Fields{
 		"peer":         pc.RemoteAddr().String(),
 		"message_type": msg.Type.String(),
@@ -93,6 +93,7 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 	case pp.MTypeChoke:
 		log.WithField("peer", pc.RemoteAddr().String()).Info("Peer choked us")
 		pc.PeerChoked = true
+		pm.OnPeerChoke(pc)
 		ps.RequestPending = false                 // Reset request pending state
 		atomic.StoreInt32(&ps.PendingRequests, 0) // Reset pending requests
 		// When choked, we should stop sending requests
@@ -106,6 +107,7 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 		}).Info("Received unchoke message")
 
 		pc.PeerChoked = false
+		pm.OnPeerUnchoke(pc)
 
 		if !ps.RequestPending {
 			log.Info("Peer has unchoked us, starting to request pieces")
@@ -117,13 +119,13 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 		}
 	case pp.MTypeInterested:
 		log.Debug("Received Interested message")
-		pc.PeerInterested = true
-		// Optionally, decide whether to choke or unchoke the peer
+		//pc.PeerInterested = true
+		pm.OnPeerInterested(pc)
 		return nil
 	case pp.MTypeNotInterested:
 		log.Debug("Received Not Interested message")
-		pc.PeerInterested = false
-		// Optionally, decide whether to choke the peer
+		//pc.PeerInterested = false
+		pm.OnPeerNotInterested(pc)
 	case pp.MTypeRequest:
 		log.WithFields(logrus.Fields{
 			"piece_index": msg.Index,
@@ -179,6 +181,8 @@ func handleMessage(pc *pp.PeerConn, msg pp.Message, dm *download.DownloadManager
 			log.WithError(err).Error("Error handling piece")
 			return err
 		}
+
+		pm.UpdatePeerStats(pc, int64(len(msg.Piece)), 0)
 
 		pendingAfter := atomic.LoadInt32(&ps.PendingRequests)
 		log.WithFields(logrus.Fields{
