@@ -155,9 +155,15 @@ func (pm *PeerManager) OnPeerInterested(pc *pp.PeerConn) {
 	pm.Mu.Lock()
 	defer pm.Mu.Unlock()
 
+	_, exists := pm.Peers[pc]
+	if !exists {
+		log.Warn("peerState does not exist")
+		return
+	}
+
 	pc.PeerInterested = true
 
-	if pm.downloadManager.IsFinished() {
+	if pm.downloadManager != nil && pm.downloadManager.IsFinished() {
 		if pc.PeerChoked {
 			pc.SendUnchoke()
 			log.WithField("peer", pc.RemoteAddr().String()).Info("Unchoked interested peer while seeding")
@@ -168,6 +174,12 @@ func (pm *PeerManager) OnPeerInterested(pc *pp.PeerConn) {
 func (pm *PeerManager) OnPeerNotInterested(pc *pp.PeerConn) {
 	pm.Mu.Lock()
 	defer pm.Mu.Unlock()
+
+	_, exists := pm.Peers[pc]
+	if !exists {
+		log.Warn("peerState does not exist")
+		return
+	}
 
 	pc.PeerInterested = false
 
