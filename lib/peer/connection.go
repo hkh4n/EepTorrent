@@ -137,7 +137,7 @@ func ConnectToPeer(ctx context.Context, peerHash []byte, index int, mi *metainfo
 func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.DownloadManager, pm *PeerManager) error {
 	// Create a done channel for cleanup
 	done := make(chan struct{})
-	defer close(done)
+	//defer close(done)
 
 	ps := NewPeerState()
 
@@ -165,7 +165,11 @@ func HandlePeerConnection(ctx context.Context, pc *pp.PeerConn, dm *download.Dow
 	go func() {
 		defer func() {
 			pc.Close()
-			done <- struct{}{}
+			select {
+			case done <- struct{}{}:
+			default:
+
+			}
 		}()
 
 		for {
