@@ -52,6 +52,7 @@ var (
 	logsContent        *widget.Label
 	uiUpdateChan       = make(chan func())
 	uiUpdateWG         sync.WaitGroup
+	samTabInstance     *SAMTab
 )
 
 type TorrentItem struct {
@@ -116,6 +117,12 @@ func RunApp() {
 	myWindow = myApp.NewWindow("EepTorrent")
 
 	ShowDisclaimer(myApp, myWindow)
+
+	// Initialize SAMTab once
+	samTabInstance = &SAMTab{
+		connected:           false,
+		samStatusUpdateChan: make(chan bool),
+	}
 
 	// Settings Form
 	downloadDirEntry := widget.NewEntry()
@@ -789,10 +796,14 @@ func ShowAboutDialog(app fyne.App, parent fyne.Window) {
 
 // createSAMTab creates the SAM configuration tab.
 func createSAMTab() fyne.CanvasObject {
-	samTab := &SAMTab{
-		connected:           false,
-		samStatusUpdateChan: make(chan bool),
+	if samTabInstance == nil {
+		samTabInstance = &SAMTab{
+			connected:           false,
+			samStatusUpdateChan: make(chan bool),
+		}
 	}
+
+	samTab := samTabInstance
 
 	// Configuration Form Fields
 	modeGroup := widget.NewRadioGroup([]string{"Use Default Settings", "Custom Settings"}, func(selected string) {})
