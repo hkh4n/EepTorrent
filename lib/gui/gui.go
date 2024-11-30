@@ -77,6 +77,18 @@ type TorrentItem struct {
 var torrentList []*TorrentItem
 var torrentListLock sync.Mutex
 
+type SAMTab struct {
+	configForm          *widget.Form
+	startButton         *widget.Button
+	restartButton       *widget.Button
+	stopButton          *widget.Button
+	statusLabel         *widget.Label
+	connected           bool
+	currentSAMConfig    i2p.SAMConfig
+	configLock          sync.Mutex
+	samStatusUpdateChan chan bool
+}
+
 func init() {
 	// Configure logrus
 	log.SetFormatter(&logrus.TextFormatter{
@@ -179,7 +191,7 @@ func RunApp() {
 
 	// Main content container
 	mainContent := container.NewMax()
-	menuItems := []string{"Settings", "Torrents", "Uploads", "Peers", "Logs", "Metrics"}
+	menuItems := []string{"Settings", "SAM", "Torrents", "Uploads", "Peers", "Logs", "Metrics"}
 
 	menuList := widget.NewList(
 		func() int {
@@ -198,6 +210,8 @@ func RunApp() {
 		switch selectedItem {
 		case "Settings":
 			mainContent.Objects = []fyne.CanvasObject{settingsForm}
+		case "SAM":
+			mainContent.Objects = []fyne.CanvasObject{createSAMTab()}
 		case "Torrents":
 			// Create toolbar
 			toolbar := createToolbar(downloadDirEntry, maxConnectionsEntry)
@@ -231,21 +245,6 @@ func RunApp() {
 	scrollableMenu.SetMinSize(fyne.NewSize(150, 0))
 
 	content := container.NewBorder(nil, nil, scrollableMenu, nil, mainContent)
-
-	// Initially, hide main content until SAM is initialized
-	mainContent.Hide()
-
-	// Display SAM Settings Dialog
-	ShowSAMSettingsDialog(myApp, myWindow, func(success bool, err error) {
-		if !success {
-			if err != nil {
-				ShowError("SAM Initialization Failed", err, myWindow)
-			}
-			myApp.Quit()
-			return
-		}
-		mainContent.Show()
-	})
 
 	myWindow.SetContent(content)
 	myWindow.Resize(fyne.NewSize(800, 600))
@@ -786,8 +785,16 @@ func ShowAboutDialog(app fyne.App, parent fyne.Window) {
 		), parent)
 }
 
-// showSAMSettingsDialog displays a popup for SAM configuration and invokes a callback upon completion.
-func ShowSAMSettingsDialog(myApp fyne.App, myWindow fyne.Window, onComplete func(success bool, err error)) {
+// gui.go (continued)
+
+// createSAMTab creates the SAM configuration tab.
+func createSAMTab() fyne.CanvasObject {
+	samTab := &SAMTab{
+		connected:           false,
+		samStatusUpdateChan: make(chan bool),
+	}
+
+	// Configuration Form Fields
 	modeGroup := widget.NewRadioGroup([]string{"Use Default Settings", "Custom Settings"}, func(selected string) {})
 	modeGroup.SetSelected("Use Default Settings")
 
@@ -823,6 +830,7 @@ func ShowSAMSettingsDialog(myApp fyne.App, myWindow fyne.Window, onComplete func
 	outboundLengthVarianceEntry.SetPlaceHolder("Outbound Length Variance")
 	outboundLengthVarianceEntry.SetText("0")
 
+	// Initially disable custom settings fields
 	inboundLengthEntry.Disable()
 	outboundLengthEntry.Disable()
 	inboundQuantityEntry.Disable()
@@ -832,6 +840,7 @@ func ShowSAMSettingsDialog(myApp fyne.App, myWindow fyne.Window, onComplete func
 	inboundLengthVarianceEntry.Disable()
 	outboundLengthVarianceEntry.Disable()
 
+	// Enable/Disable custom settings based on mode selection
 	modeGroup.OnChanged = func(selected string) {
 		if selected == "Custom Settings" {
 			inboundLengthEntry.Enable()
@@ -854,7 +863,7 @@ func ShowSAMSettingsDialog(myApp fyne.App, myWindow fyne.Window, onComplete func
 		}
 	}
 
-	samSettingsForm := widget.NewForm(
+	samTab.configForm = widget.NewForm(
 		widget.NewFormItem("Mode", modeGroup),
 		widget.NewFormItem("Inbound Length", inboundLengthEntry),
 		widget.NewFormItem("Outbound Length", outboundLengthEntry),
@@ -866,95 +875,182 @@ func ShowSAMSettingsDialog(myApp fyne.App, myWindow fyne.Window, onComplete func
 		widget.NewFormItem("Outbound Length Variance", outboundLengthVarianceEntry),
 	)
 
-	content := container.NewVBox(
-		samSettingsForm,
-	)
+	// Control Buttons
+	samTab.startButton = widget.NewButton("Start SAM", func() {
+		samTab.configLock.Lock()
+		defer samTab.configLock.Unlock()
 
-	dialog.ShowCustomConfirm("SAM Settings", "Save", "Cancel", content, func(confirm bool) {
-		if confirm {
-			var cfg i2p.SAMConfig
-			if modeGroup.Selected == "Use Default Settings" {
-				cfg = i2p.DefaultSAMConfig()
-			} else {
-				// Validate and parse custom settings
-				inboundLength, err := strconv.Atoi(inboundLengthEntry.Text)
-				if err != nil || inboundLength < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Inbound Length must be a non-negative integer"), myWindow)
-					return
-				}
+		if samTab.connected {
+			dialog.ShowInformation("SAM Already Running", "SAM session is already connected.", myWindow)
+			return
+		}
 
-				outboundLength, err := strconv.Atoi(outboundLengthEntry.Text)
-				if err != nil || outboundLength < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Outbound Length must be a non-negative integer"), myWindow)
-					return
-				}
-
-				inboundQuantity, err := strconv.Atoi(inboundQuantityEntry.Text)
-				if err != nil || inboundQuantity < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Inbound Quantity must be a non-negative integer"), myWindow)
-					return
-				}
-
-				outboundQuantity, err := strconv.Atoi(outboundQuantityEntry.Text)
-				if err != nil || outboundQuantity < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Outbound Quantity must be a non-negative integer"), myWindow)
-					return
-				}
-
-				inboundBackupQuantity, err := strconv.Atoi(inboundBackupQuantityEntry.Text)
-				if err != nil || inboundBackupQuantity < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Inbound Backup Quantity must be a non-negative integer"), myWindow)
-					return
-				}
-
-				outboundBackupQuantity, err := strconv.Atoi(outboundBackupQuantityEntry.Text)
-				if err != nil || outboundBackupQuantity < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Outbound Backup Quantity must be a non-negative integer"), myWindow)
-					return
-				}
-
-				inboundLengthVariance, err := strconv.Atoi(inboundLengthVarianceEntry.Text)
-				if err != nil || inboundLengthVariance < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Inbound Length Variance must be a non-negative integer"), myWindow)
-					return
-				}
-
-				outboundLengthVariance, err := strconv.Atoi(outboundLengthVarianceEntry.Text)
-				if err != nil || outboundLengthVariance < 0 {
-					ShowError("Invalid Input", fmt.Errorf("Outbound Length Variance must be a non-negative integer"), myWindow)
-					return
-				}
-
-				cfg = i2p.SAMConfig{
-					InboundLength:          inboundLength,
-					OutboundLength:         outboundLength,
-					InboundQuantity:        inboundQuantity,
-					OutboundQuantity:       outboundQuantity,
-					InboundBackupQuantity:  inboundBackupQuantity,
-					OutboundBackupQuantity: outboundBackupQuantity,
-					InboundLengthVariance:  inboundLengthVariance,
-					OutboundLengthVariance: outboundLengthVariance,
-				}
-			}
-
-			// Initialize SAM with the selected configuration
-			err := i2p.InitSAM(cfg)
-			if err != nil {
-				ShowError("SAM Initialization Failed", err, myWindow)
+		var cfg i2p.SAMConfig
+		if modeGroup.Selected == "Use Default Settings" {
+			cfg = i2p.DefaultSAMConfig()
+		} else {
+			// Validate and parse custom settings
+			inboundLength, err := strconv.Atoi(inboundLengthEntry.Text)
+			if err != nil || inboundLength < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Inbound Length must be a non-negative integer"), myWindow)
 				return
 			}
 
-			// Invoke the callback to proceed to the main interface
-			onComplete(true, nil)
-		} else {
-			// Handle cancellation, e.g., exit the application
-			dialog.ShowConfirm("Exit Application", "Are you sure you want to exit?", func(confirmed bool) {
-				if confirmed {
-					onComplete(false, fmt.Errorf("User canceled SAM settings"))
-				}
-			}, myWindow)
+			outboundLength, err := strconv.Atoi(outboundLengthEntry.Text)
+			if err != nil || outboundLength < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Outbound Length must be a non-negative integer"), myWindow)
+				return
+			}
+
+			inboundQuantity, err := strconv.Atoi(inboundQuantityEntry.Text)
+			if err != nil || inboundQuantity < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Inbound Quantity must be a non-negative integer"), myWindow)
+				return
+			}
+
+			outboundQuantity, err := strconv.Atoi(outboundQuantityEntry.Text)
+			if err != nil || outboundQuantity < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Outbound Quantity must be a non-negative integer"), myWindow)
+				return
+			}
+
+			inboundBackupQuantity, err := strconv.Atoi(inboundBackupQuantityEntry.Text)
+			if err != nil || inboundBackupQuantity < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Inbound Backup Quantity must be a non-negative integer"), myWindow)
+				return
+			}
+
+			outboundBackupQuantity, err := strconv.Atoi(outboundBackupQuantityEntry.Text)
+			if err != nil || outboundBackupQuantity < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Outbound Backup Quantity must be a non-negative integer"), myWindow)
+				return
+			}
+
+			inboundLengthVariance, err := strconv.Atoi(inboundLengthVarianceEntry.Text)
+			if err != nil || inboundLengthVariance < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Inbound Length Variance must be a non-negative integer"), myWindow)
+				return
+			}
+
+			outboundLengthVariance, err := strconv.Atoi(outboundLengthVarianceEntry.Text)
+			if err != nil || outboundLengthVariance < 0 {
+				ShowError("Invalid Input", fmt.Errorf("Outbound Length Variance must be a non-negative integer"), myWindow)
+				return
+			}
+
+			cfg = i2p.SAMConfig{
+				InboundLength:          inboundLength,
+				OutboundLength:         outboundLength,
+				InboundQuantity:        inboundQuantity,
+				OutboundQuantity:       outboundQuantity,
+				InboundBackupQuantity:  inboundBackupQuantity,
+				OutboundBackupQuantity: outboundBackupQuantity,
+				InboundLengthVariance:  inboundLengthVariance,
+				OutboundLengthVariance: outboundLengthVariance,
+			}
 		}
-	}, myWindow)
+
+		// Initialize SAM with the selected configuration
+		err := i2p.InitSAM(cfg)
+		if err != nil {
+			ShowError("SAM Initialization Failed", err, myWindow)
+			return
+		}
+
+		samTab.connected = true
+		samTab.currentSAMConfig = cfg
+
+		// Update status label
+		samTab.statusLabel.SetText("Connected")
+		log.Info("SAM session started.")
+
+		// Notify the user
+		dialog.ShowInformation("SAM Started", "SAM session has been successfully started.", myWindow)
+	})
+
+	samTab.restartButton = widget.NewButton("Restart SAM", func() {
+		samTab.configLock.Lock()
+		defer samTab.configLock.Unlock()
+
+		if !samTab.connected {
+			dialog.ShowInformation("SAM Not Running", "SAM session is not currently running.", myWindow)
+			return
+		}
+
+		// Close existing SAM session
+		i2p.CloseSAM()
+		samTab.connected = false
+		samTab.statusLabel.SetText("Disconnected")
+		log.Info("SAM session stopped.")
+
+		// Restart SAM with the current configuration
+		err := i2p.InitSAM(samTab.currentSAMConfig)
+		if err != nil {
+			ShowError("SAM Restart Failed", err, myWindow)
+			return
+		}
+
+		samTab.connected = true
+		samTab.statusLabel.SetText("Connected")
+		log.Info("SAM session restarted.")
+
+		// Notify the user
+		dialog.ShowInformation("SAM Restarted", "SAM session has been successfully restarted.", myWindow)
+	})
+
+	samTab.stopButton = widget.NewButton("Stop SAM", func() {
+		samTab.configLock.Lock()
+		defer samTab.configLock.Unlock()
+
+		if !samTab.connected {
+			dialog.ShowInformation("SAM Not Running", "SAM session is not currently running.", myWindow)
+			return
+		}
+
+		// Close SAM session
+		i2p.CloseSAM()
+		samTab.connected = false
+		samTab.statusLabel.SetText("Disconnected")
+		log.Info("SAM session stopped.")
+
+		// Notify the user
+		dialog.ShowInformation("SAM Stopped", "SAM session has been successfully stopped.", myWindow)
+	})
+
+	// Status Label
+	samTab.statusLabel = widget.NewLabel("Disconnected")
+	samTab.statusLabel.Wrapping = fyne.TextWrapWord
+
+	// Layout the SAM Tab
+	samTabContent := container.NewVBox(
+		widget.NewLabelWithStyle("SAM Configuration", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		samTab.configForm,
+		container.NewHBox(
+			samTab.startButton,
+			samTab.restartButton,
+			samTab.stopButton,
+		),
+		container.NewHBox(
+			widget.NewLabelWithStyle("Connection Status:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			samTab.statusLabel,
+		),
+	)
+
+	// Start a goroutine to monitor SAM status if needed
+	go samTab.monitorSAMStatus()
+
+	return container.NewScroll(samTabContent)
+}
+
+// monitorSAMStatus listens for status updates and updates the UI accordingly.
+func (samTab *SAMTab) monitorSAMStatus() {
+	for status := range samTab.samStatusUpdateChan {
+		if status {
+			samTab.statusLabel.SetText("Connected")
+		} else {
+			samTab.statusLabel.SetText("Disconnected")
+		}
+	}
 }
 
 // drawLine draws a line on an image using Bresenham's algorithm
