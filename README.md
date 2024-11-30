@@ -11,7 +11,7 @@ This is a work in progress and is considered **pre-alpha** software, meaning it 
 git clone https://github.com/hkh4n/EepTorrent.git
 cd EepTorrent
 go mod tidy
-make build
+make build-native
 ```
 
 ## Testing
