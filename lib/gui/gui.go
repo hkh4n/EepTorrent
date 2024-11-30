@@ -50,6 +50,7 @@ var (
 	torrentListView    *widget.List
 	removeButton       *widget.Button
 	logsContent        *widget.Label
+	uiUpdateChan       = make(chan func())
 )
 
 type TorrentItem struct {
@@ -68,6 +69,8 @@ type TorrentItem struct {
 	ctx             context.Context
 	cancelFunc      context.CancelFunc
 	progressBinding binding.Float
+	removed         bool
+	mu              sync.Mutex
 }
 
 var torrentList []*TorrentItem
@@ -84,8 +87,14 @@ func init() {
 }
 
 // RunApp initializes and runs the GUI application.
-// RunApp initializes and runs the GUI application.
 func RunApp() {
+	// Initialize the UI update channel and processor
+	uiUpdateChan = make(chan func())
+	go func() {
+		for updateFunc := range uiUpdateChan {
+			updateFunc()
+		}
+	}()
 	myApp = app.NewWithID("com.i2p.EepTorrent")
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
@@ -277,6 +286,8 @@ func RunApp() {
 			logFile.Close()
 		}
 		logFileMux.Unlock()
+		// Close the uiUpdateChan
+		close(uiUpdateChan)
 	})
 
 	myWindow.ShowAndRun()
@@ -313,31 +324,40 @@ func createToolbar(downloadDirEntry *widget.Entry, maxConnectionsEntry *widget.E
 	})
 
 	removeButton = widget.NewButton("Remove Torrent", func() {
-		// Remove selected torrent
 		torrentListLock.Lock()
 		defer torrentListLock.Unlock()
 
 		if selectedTorrent != nil {
-			// Stop the torrent
+			// Safely set the 'removed' flag
+			selectedTorrent.mu.Lock()
+			selectedTorrent.removed = true
+			selectedTorrent.mu.Unlock()
+
+			// Cancel the torrent's context to stop all associated goroutines
 			selectedTorrent.cancelFunc()
-			// Remove from list
+
+			// Remove the torrent from the list
 			for i, t := range torrentList {
 				if t == selectedTorrent {
 					torrentList = append(torrentList[:i], torrentList[i+1:]...)
+					log.Infof("Removed torrent: %s at index %d", t.Name, i)
 					break
 				}
 			}
+
 			// Update the binding and UI
-			torrentListLock.Lock()
-			torrentList = append(torrentList, selectedTorrent)
 			torrentListBinding.Set(torrentListToAnySlice(torrentList))
-			torrentListLock.Unlock()
 			selectedTorrent = nil
-			//myApp.QueueUpdate(func() {
-			torrentListView.Refresh()
-			//})
+
+			// Refresh the UI on the main thread
+			uiUpdateChan <- func() {
+				torrentListView.Refresh()
+			}
 		} else {
-			dialog.ShowInformation("No Torrent Selected", "Please select a torrent to remove.", myWindow)
+			uiUpdateChan <- func() {
+				dialog.ShowInformation("No Torrent Selected", "Please select a torrent to remove.", myWindow)
+				log.Warn("Attempted to remove a torrent without selection.")
+			}
 		}
 	})
 
@@ -418,6 +438,8 @@ func createTorrentListView() *widget.List {
 		defer torrentListLock.Unlock()
 		if id >= 0 && id < len(torrentList) {
 			selectedTorrent = torrentList[id]
+		} else {
+			selectedTorrent = nil
 		}
 	}
 	return torrentListView
@@ -436,7 +458,10 @@ func updateLogsContent() {
 			if len(currentLogs) > maxLogLength {
 				currentLogs = currentLogs[len(currentLogs)-maxLogLength:]
 			}
-			logsContent.SetText(currentLogs)
+			// Schedule UI update
+			uiUpdateChan <- func() {
+				logsContent.SetText(currentLogs)
+			}
 			previousLogs = currentLogs
 		}
 		logFileMux.Unlock()
@@ -484,13 +509,17 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 	// Load the torrent file
 	mi, err := metainfo.LoadFromFile(torrentFilePath)
 	if err != nil {
-		ShowError("Failed to load torrent", err, myWindow)
+		uiUpdateChan <- func() {
+			ShowError("Failed to load torrent", err, myWindow)
+		}
 		return
 	}
 
 	info, err := mi.Info()
 	if err != nil {
-		ShowError("Failed to parse torrent info", err, myWindow)
+		uiUpdateChan <- func() {
+			ShowError("Failed to parse torrent info", err, myWindow)
+		}
 		return
 	}
 
@@ -512,7 +541,9 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 		// Create the directory if it doesn't exist
 		err := os.MkdirAll(outputPath, mode)
 		if err != nil && !os.IsExist(err) {
-			ShowError("Failed to create output directory", err, myWindow)
+			uiUpdateChan <- func() {
+				ShowError("Failed to create output directory", err, myWindow)
+			}
 			return
 		}
 	}
@@ -545,8 +576,14 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 
 	// Add to torrent list
 	torrentListLock.Lock()
-	torrentList = append(torrentList, torrentItem)
-	torrentListBinding.Set(torrentListToAnySlice(torrentList))
+	uiUpdateChan <- func() {
+		torrentList = append(torrentList, torrentItem)
+		torrentListBinding.Set(torrentListToAnySlice(torrentList))
+
+		// Automatically select the newly added torrent
+		newIndex := len(torrentList) - 1
+		torrentListView.Select(newIndex)
+	}
 	torrentListLock.Unlock()
 
 	// Start the download in a separate goroutine
@@ -554,16 +591,30 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 		defer func() {
 			if torrent.dm.IsFinished() {
 				torrent.Status = "Seeding"
-				myApp.SendNotification(&fyne.Notification{
-					Title:   "Download Complete",
-					Content: fmt.Sprintf("%s has finished downloading.", torrent.Name),
-				})
+				uiUpdateChan <- func() {
+					torrent.mu.Lock()
+					defer torrent.mu.Unlock()
+					if torrent.removed {
+						return
+					}
+					myApp.SendNotification(&fyne.Notification{
+						Title:   "Download Complete",
+						Content: fmt.Sprintf("%s has finished downloading.", torrent.Name),
+					})
+				}
 			} else {
 				torrent.Status = "Stopped"
-				myApp.SendNotification(&fyne.Notification{
-					Title:   "Download Stopped",
-					Content: fmt.Sprintf("%s download was stopped.", torrent.Name),
-				})
+				uiUpdateChan <- func() {
+					torrent.mu.Lock()
+					defer torrent.mu.Unlock()
+					if torrent.removed {
+						return
+					}
+					myApp.SendNotification(&fyne.Notification{
+						Title:   "Download Stopped",
+						Content: fmt.Sprintf("%s download was stopped.", torrent.Name),
+					})
+				}
 			}
 		}()
 
@@ -615,9 +666,15 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 				torrent.Status = "Downloading"
 
 				// Update UI
-
-				torrentListBinding.Set(torrentListToAnySlice(torrentList))
-				torrentListView.Refresh()
+				uiUpdateChan <- func() {
+					torrent.mu.Lock()
+					defer torrent.mu.Unlock()
+					if torrent.removed {
+						return
+					}
+					torrentListBinding.Set(torrentListToAnySlice(torrentList))
+					torrentListView.Refresh()
+				}
 
 			case <-torrent.ctx.Done():
 				return
@@ -626,9 +683,15 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 	}(torrentItem)
 	go func() {
 		// Get peers from trackers
-		allPeers, err := getAllPeers(&mi)
+		allPeers, err := getAllPeers(torrentItem.ctx, &mi)
 		if err != nil {
-			ShowError("Failed to get peers from any tracker", err, myWindow)
+			if err == context.Canceled {
+				log.Infof("Peer fetching canceled for torrent %s", torrentItem.Name)
+				return
+			}
+			uiUpdateChan <- func() {
+				ShowError("Failed to get peers from any tracker", err, myWindow)
+			}
 			return
 		}
 
@@ -651,26 +714,26 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 
 		wg.Wait()
 
-		if torrentItem.dm.IsFinished() {
-			dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name), myWindow)
-			torrentItem.Status = "Seeding"
-			fyne.CurrentApp().SendNotification(&fyne.Notification{
-				Title:   "Download Complete",
-				Content: fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name),
-			})
-			torrentItem.Status = "Seeding"
-		} else {
-			dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
-			torrentItem.Status = "Incomplete"
-			fyne.CurrentApp().SendNotification(&fyne.Notification{
-				Title:   "Download Incomplete",
-				Content: fmt.Sprintf("%s did not complete successfully.", torrentItem.Name),
-			})
+		uiUpdateChan <- func() {
+			if torrentItem.dm.IsFinished() {
+				dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name), myWindow)
+				torrentItem.Status = "Seeding"
+				fyne.CurrentApp().SendNotification(&fyne.Notification{
+					Title:   "Download Complete",
+					Content: fmt.Sprintf("Downloaded %s successfully.", torrentItem.Name),
+				})
+				torrentItem.Status = "Seeding"
+			} else {
+				dialog.ShowInformation("Download Incomplete", "The download did not complete successfully.", myWindow)
+				torrentItem.Status = "Incomplete"
+				fyne.CurrentApp().SendNotification(&fyne.Notification{
+					Title:   "Download Incomplete",
+					Content: fmt.Sprintf("%s did not complete successfully.", torrentItem.Name),
+				})
+			}
 		}
-
 		torrentListBinding.Set(torrentListToAnySlice(torrentList))
 		torrentListView.Refresh()
-
 	}()
 }
 
@@ -985,12 +1048,12 @@ func saveLogsToFile() {
 }
 
 // getAllPeers retrieves peers from multiple trackers.
-func getAllPeers(mi *metainfo.MetaInfo) ([][]byte, error) {
+func getAllPeers(ctx context.Context, mi *metainfo.MetaInfo) ([][]byte, error) {
 	var allPeers [][]byte
 	timeout := time.Second * 15
 
 	// List of tracker functions
-	trackerFuncs := []func(*metainfo.MetaInfo, time.Duration) ([][]byte, error){
+	trackerFuncs := []func(context.Context, *metainfo.MetaInfo, time.Duration) ([][]byte, error){
 		tracker.GetPeersFromEepTorrentTracker,
 		tracker.GetPeersFromPostmanTracker,
 		tracker.GetPeersFromSimpTracker,
@@ -1001,13 +1064,19 @@ func getAllPeers(mi *metainfo.MetaInfo) ([][]byte, error) {
 	}
 
 	for _, getPeers := range trackerFuncs {
-		peers, err := getPeers(mi, timeout)
-		if err != nil {
-			log.WithError(err).Warn("Failed to get peers from tracker")
-		} else {
-			allPeers = append(allPeers, peers...)
+		select {
+		case <-ctx.Done():
+			log.Infof("Peer fetching canceled for torrent due to context cancellation.")
+			return nil, ctx.Err()
+		default:
+			peers, err := getPeers(ctx, mi, timeout)
+			if err != nil {
+				log.WithError(err).Warn("Failed to get peers from tracker")
+			} else {
+				allPeers = append(allPeers, peers...)
+			}
+			time.Sleep(1 * time.Second) // Throttle requests
 		}
-		time.Sleep(1 * time.Second) // Throttle requests
 	}
 
 	if len(allPeers) == 0 {
