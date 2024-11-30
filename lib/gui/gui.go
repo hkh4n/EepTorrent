@@ -971,12 +971,11 @@ func createSAMTab() fyne.CanvasObject {
 		samTab.connected = true
 		samTab.currentSAMConfig = cfg
 
-		// Update status label
-		samTab.statusLabel.SetText("Connected")
-		log.Info("SAM session started.")
-
-		// Notify the user
-		dialog.ShowInformation("SAM Started", "SAM session has been successfully started.", myWindow)
+		uiUpdateChan <- func() {
+			samTab.statusLabel.SetText("Connected")
+			log.Info("SAM session started.")
+			dialog.ShowInformation("SAM Started", "SAM session has been successfully started.", myWindow)
+		}
 	})
 
 	samTab.restartButton = widget.NewButton("Restart SAM", func() {
@@ -991,8 +990,10 @@ func createSAMTab() fyne.CanvasObject {
 		// Close existing SAM session
 		i2p.CloseSAM()
 		samTab.connected = false
-		samTab.statusLabel.SetText("Disconnected")
-		log.Info("SAM session stopped.")
+		uiUpdateChan <- func() {
+			samTab.statusLabel.SetText("Disconnected")
+			log.Info("SAM session stopped.")
+		}
 
 		// Restart SAM with the current configuration
 		err := i2p.InitSAM(samTab.currentSAMConfig)
@@ -1002,8 +1003,10 @@ func createSAMTab() fyne.CanvasObject {
 		}
 
 		samTab.connected = true
-		samTab.statusLabel.SetText("Connected")
-		log.Info("SAM session restarted.")
+		uiUpdateChan <- func() {
+			samTab.statusLabel.SetText("Connected")
+			log.Info("SAM session restarted.")
+		}
 
 		// Notify the user
 		dialog.ShowInformation("SAM Restarted", "SAM session has been successfully restarted.", myWindow)
@@ -1021,8 +1024,10 @@ func createSAMTab() fyne.CanvasObject {
 		// Close SAM session
 		i2p.CloseSAM()
 		samTab.connected = false
-		samTab.statusLabel.SetText("Disconnected")
-		log.Info("SAM session stopped.")
+		uiUpdateChan <- func() {
+			samTab.statusLabel.SetText("Disconnected")
+			log.Info("SAM session stopped.")
+		}
 
 		// Notify the user
 		dialog.ShowInformation("SAM Stopped", "SAM session has been successfully stopped.", myWindow)
@@ -1057,9 +1062,13 @@ func createSAMTab() fyne.CanvasObject {
 func (samTab *SAMTab) monitorSAMStatus() {
 	for status := range samTab.samStatusUpdateChan {
 		if status {
-			samTab.statusLabel.SetText("Connected")
+			uiUpdateChan <- func() {
+				samTab.statusLabel.SetText("Connected")
+			}
 		} else {
-			samTab.statusLabel.SetText("Disconnected")
+			uiUpdateChan <- func() {
+				samTab.statusLabel.SetText("Disconnected")
+			}
 		}
 	}
 }
