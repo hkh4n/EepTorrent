@@ -85,14 +85,14 @@ func (cd *ChartData) GenerateChartPNG() ([]byte, error) {
 	var buf bytes.Buffer
 	err := graph.Render(chart.PNG, &buf)
 	if err != nil {
-		log.Printf("Failed to render chart: %v", err)
+		log.Debugf("Failed to render chart: %v", err)
 		return nil, err
 	}
 
 	// Optionally, write the PNG to a file for debugging
 	err = os.WriteFile("generated_chart.png", buf.Bytes(), 0644)
 	if err != nil {
-		log.Printf("Error writing PNG to file: %v", err)
+		log.Debugf("Error writing PNG to file: %v", err)
 	}
 
 	return buf.Bytes(), nil
@@ -102,12 +102,12 @@ func (cd *ChartData) GenerateChartPNG() ([]byte, error) {
 func UpdateMetricsChart(chartData *ChartData, chartImage *canvas.Image, myApp fyne.App) {
 	pngBytes, err := chartData.GenerateChartPNG()
 	if err != nil {
-		log.Printf("Error generating chart PNG: %v", err)
+		log.Debugf("Error generating chart PNG: %v", err)
 		return
 	}
 
 	if len(pngBytes) == 0 {
-		log.Printf("Generated PNG bytes are empty")
+		log.Debugf("Generated PNG bytes are empty")
 		return
 	}
 
