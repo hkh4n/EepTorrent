@@ -51,6 +51,7 @@ var (
 	removeButton       *widget.Button
 	logsContent        *widget.Label
 	uiUpdateChan       = make(chan func())
+	uiUpdateWG         sync.WaitGroup
 )
 
 type TorrentItem struct {
@@ -90,7 +91,9 @@ func init() {
 func RunApp() {
 	// Initialize the UI update channel and processor
 	uiUpdateChan = make(chan func())
+	uiUpdateWG.Add(1)
 	go func() {
+		defer uiUpdateWG.Done()
 		for updateFunc := range uiUpdateChan {
 			updateFunc()
 		}
@@ -286,8 +289,9 @@ func RunApp() {
 			logFile.Close()
 		}
 		logFileMux.Unlock()
-		// Close the uiUpdateChan
+
 		close(uiUpdateChan)
+		uiUpdateWG.Wait()
 	})
 
 	myWindow.ShowAndRun()
