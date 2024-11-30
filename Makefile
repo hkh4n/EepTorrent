@@ -38,11 +38,15 @@ IOS_APP_ID=com.i2p.eeptorrent
 ICON_PATH=images/Logo.png
 
 # Targets
-.PHONY: all build build-linux build-windows build-macos build-android build-android-arm64 build-android-arm build-android-amd64 check-android clean test run install uninstall
+.PHONY: all build build-native build-linux build-windows build-macos build-android build-android-arm64 build-android-arm build-android-amd64 check-android clean test run install uninstall
 
 all: test build
 
-build: build-linux build-windows build-macos build-android build-ios
+build: build-native build-linux build-windows build-macos build-android build-ios
+
+build-native:
+	mkdir -p $(BUILD_DIR)
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) -v $(MAIN)
 
 build-tools:
 	mkdir -p $(BUILD_DIR)
