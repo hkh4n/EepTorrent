@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"eeptorrent/lib/i2p"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
 	"github.com/sirupsen/logrus"
@@ -45,7 +46,7 @@ func TestTrackers(t *testing.T) {
 	// Define test cases
 	trackerTests := []struct {
 		name    string
-		getFn   func(*metainfo.MetaInfo, time.Duration) ([][]byte, error)
+		getFn   func(context.Context, *metainfo.MetaInfo, time.Duration) ([][]byte, error)
 		timeout time.Duration
 	}{
 		{
@@ -90,9 +91,10 @@ func TestTrackers(t *testing.T) {
 			done := make(chan bool)
 			var peers [][]byte
 			var testErr error
+			ctx := context.Background()
 
 			go func() {
-				peers, testErr = tt.getFn(&mi, time.Second*30)
+				peers, testErr = tt.getFn(ctx, &mi, time.Second*30)
 				done <- true
 			}()
 
