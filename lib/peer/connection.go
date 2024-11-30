@@ -23,6 +23,7 @@ import (
 	"context"
 	"eeptorrent/lib/download"
 	"eeptorrent/lib/i2p"
+	"eeptorrent/lib/upload"
 	"eeptorrent/lib/util"
 	"encoding/base32"
 	"fmt"
@@ -32,6 +33,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -342,4 +345,169 @@ func RemoveDuplicatePeers(peers [][]byte) [][]byte {
 		}
 	}
 	return uniquePeers
+}
+
+// retryConnect attempts to connect to a peer with retry logic.
+// maxRetries: Maximum number of retry attempts.
+// initialDelay: Initial delay before the first retry.
+func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, pm *PeerManager, maxRetries int, initialDelay time.Duration) {
+	delay := initialDelay
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			log.Infof("Context cancelled, stopping retries for peer %d", index)
+			return
+		default:
+		}
+
+		err := ConnectToPeer(ctx, peerHash, index, mi, dm, pm)
+		if err == nil {
+			log.Infof("Successfully connected to peer %d on attempt %d", index, attempt)
+			return
+		}
+
+		log.Errorf("Attempt %d to connect to peer %d failed: %v", attempt, index, err)
+
+		if attempt < maxRetries {
+			log.Infof("Retrying to connect to peer %d after %v...", index, delay)
+			select {
+			case <-ctx.Done():
+				log.Infof("Context cancelled during delay, stopping retries for peer %d", index)
+				return
+			case <-time.After(delay):
+				// Exponential backoff: double the delay for the next attempt
+				delay *= 2
+				if delay > 60*time.Second {
+					delay = 60 * time.Second // Cap the delay to 60 seconds
+				}
+			}
+		}
+	}
+
+	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
+}
+
+// retryConnect attempts to connect to a peer with retry logic.
+// maxRetries: Maximum number of retry attempts.
+// initialDelay: Initial delay before the first retry.
+func RetryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, pm *PeerManager, maxRetries int, initialDelay time.Duration) {
+	delay := initialDelay
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			log.Infof("Context cancelled, stopping retries for peer %d", index)
+			return
+		default:
+		}
+
+		err := ConnectToPeer(ctx, peerHash, index, mi, dm, pm)
+		if err == nil {
+			log.Infof("Successfully connected to peer %d on attempt %d", index, attempt)
+			return
+		}
+
+		log.Errorf("Attempt %d to connect to peer %d failed: %v", attempt, index, err)
+
+		if attempt < maxRetries {
+			log.Infof("Retrying to connect to peer %d after %v...", index, delay)
+			select {
+			case <-ctx.Done():
+				log.Infof("Context cancelled during delay, stopping retries for peer %d", index)
+				return
+			case <-time.After(delay):
+				// Exponential backoff: double the delay for the next attempt
+				delay *= 2
+				if delay > 60*time.Second {
+					delay = 60 * time.Second // Cap the delay to 60 seconds
+				}
+			}
+		}
+	}
+
+	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
+}
+
+func StartPeerListener(mi *metainfo.MetaInfo, downloadDir string) error {
+	listenerSession := i2p.GlobalStreamSession
+
+	listener, err := listenerSession.Listen()
+	if err != nil {
+		return fmt.Errorf("Failed to start listening: %v", err)
+	}
+	defer listener.Close()
+
+	log.Info("Started seeding listener on address: ", listenerSession.Addr().Base32())
+
+	// Initialize the file writer for the seeder
+	var outputPath string
+	var mode os.FileMode
+	info, err := mi.Info()
+	if err != nil {
+		return fmt.Errorf("Failed to get torrent info: %v", err)
+	}
+
+	if len(info.Files) == 0 {
+		// Single-file torrent
+		outputPath = filepath.Join(downloadDir, info.Name)
+		mode = 0644
+	} else {
+		// Multi-file torrent
+		outputPath = filepath.Join(downloadDir, info.Name)
+		mode = 0755
+		// Create the directory if it doesn't exist
+		err := os.MkdirAll(outputPath, mode)
+		if err != nil && !os.IsExist(err) {
+			return fmt.Errorf("Failed to create output directory: %v", err)
+		}
+	}
+
+	writer := metainfo.NewWriter(outputPath, info, mode)
+
+	// Initialize the UploadManager for the seeder
+	um := upload.NewUploadManager(writer, info, downloadDir)
+
+	// Initialize the PeerManager for uploading
+	pm := NewPeerManager(nil) // Pass nil since we're not downloading
+
+	// Start accepting incoming connections
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.WithError(err).Error("Error accepting connection")
+			continue
+		}
+
+		go func(conn net.Conn) {
+			defer conn.Close()
+
+			// Set appropriate timeouts
+			conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+			// Generate peer ID for this connection
+			peerId := util.GeneratePeerIdMeta()
+
+			// Perform handshake
+			err := PerformHandshake(conn, mi.InfoHash().Bytes(), string(peerId[:]))
+			if err != nil {
+				log.WithError(err).Error("Failed handshake with seeding peer")
+				return
+			}
+
+			// Create peer connection
+			pc := pp.NewPeerConn(conn, peerId, mi.InfoHash())
+			pc.Timeout = 30 * time.Second
+
+			// Add peer to UploadManager
+			um.AddPeer(pc)
+			defer um.RemovePeer(pc)
+
+			// Handle the peer connection in seeding mode
+			err = HandleSeedingPeer(pc, um, pm)
+			if err != nil {
+				log.WithError(err).Error("Error handling seeding peer")
+			}
+		}(conn)
+	}
 }

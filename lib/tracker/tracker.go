@@ -282,6 +282,44 @@ func GetPeersFrom6kw6Tracker(ctx context.Context, mi *metainfo.MetaInfo, timeout
 	return getPeersFromTracker(ctx, config, mi)
 }
 
+// getAllPeers retrieves peers from multiple trackers.
+func GetAllPeers(ctx context.Context, mi *metainfo.MetaInfo) ([][]byte, error) {
+	var allPeers [][]byte
+	timeout := time.Second * 15
+
+	// List of tracker functions
+	trackerFuncs := []func(context.Context, *metainfo.MetaInfo, time.Duration) ([][]byte, error){
+		GetPeersFromEepTorrentTracker,
+		GetPeersFromPostmanTracker,
+		GetPeersFromSimpTracker,
+		GetPeersFromDg2Tracker,
+		GetPeersFromSkankTracker,
+		GetPeersFromOmitTracker,
+		GetPeersFrom6kw6Tracker,
+	}
+
+	for _, getPeers := range trackerFuncs {
+		select {
+		case <-ctx.Done():
+			log.Infof("Peer fetching canceled for torrent due to context cancellation.")
+			return nil, ctx.Err()
+		default:
+			peers, err := getPeers(ctx, mi, timeout)
+			if err != nil {
+				log.WithError(err).Warn("Failed to get peers from tracker")
+			} else {
+				allPeers = append(allPeers, peers...)
+			}
+			time.Sleep(1 * time.Second) // Throttle requests
+		}
+	}
+
+	if len(allPeers) == 0 {
+		return nil, fmt.Errorf("No peers found")
+	}
+	return allPeers, nil
+}
+
 func checkPostmanTrackerResponse(response string) error {
 	// Check for specific error conditions
 	if strings.Contains(response, "Request denied!") {

@@ -7,7 +7,6 @@ import (
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/peer"
 	"eeptorrent/lib/tracker"
-	"eeptorrent/lib/upload"
 	"eeptorrent/lib/util"
 	"eeptorrent/lib/util/logo"
 	"fmt"
@@ -19,12 +18,10 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
-	pp "github.com/go-i2p/go-i2p-bt/peerprotocol"
 	"github.com/sirupsen/logrus"
 	"image"
 	"image/color"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -630,7 +627,7 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 
 		// Start the listener for incoming connections (seeding)
 		go func() {
-			err := startPeerListener(&mi, downloadDir)
+			err := peer.StartPeerListener(&mi, downloadDir)
 			if err != nil {
 				log.WithError(err).Error("Failed to start peer listener")
 			}
@@ -693,7 +690,7 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 	}(torrentItem)
 	go func() {
 		// Get peers from trackers
-		allPeers, err := getAllPeers(torrentItem.ctx, &mi)
+		allPeers, err := tracker.GetAllPeers(torrentItem.ctx, &mi)
 		if err != nil {
 			if err == context.Canceled {
 				log.Infof("Peer fetching canceled for torrent %s", torrentItem.Name)
@@ -718,7 +715,7 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 			wg.Add(1)
 			go func(peerHash []byte, index int) {
 				defer wg.Done()
-				retryConnect(torrentItem.ctx, peerHash, index, &mi, torrentItem.dm, torrentItem.pm, maxRetries, initialDelay)
+				peer.RetryConnect(torrentItem.ctx, peerHash, index, &mi, torrentItem.dm, torrentItem.pm, maxRetries, initialDelay)
 			}(uniquePeers[i], i)
 		}
 
@@ -1165,276 +1162,4 @@ func saveLogsToFile() {
 
 	// Show the save dialog
 	saveDialog.Show()
-}
-
-// getAllPeers retrieves peers from multiple trackers.
-func getAllPeers(ctx context.Context, mi *metainfo.MetaInfo) ([][]byte, error) {
-	var allPeers [][]byte
-	timeout := time.Second * 15
-
-	// List of tracker functions
-	trackerFuncs := []func(context.Context, *metainfo.MetaInfo, time.Duration) ([][]byte, error){
-		tracker.GetPeersFromEepTorrentTracker,
-		tracker.GetPeersFromPostmanTracker,
-		tracker.GetPeersFromSimpTracker,
-		tracker.GetPeersFromDg2Tracker,
-		tracker.GetPeersFromSkankTracker,
-		tracker.GetPeersFromOmitTracker,
-		tracker.GetPeersFrom6kw6Tracker,
-	}
-
-	for _, getPeers := range trackerFuncs {
-		select {
-		case <-ctx.Done():
-			log.Infof("Peer fetching canceled for torrent due to context cancellation.")
-			return nil, ctx.Err()
-		default:
-			peers, err := getPeers(ctx, mi, timeout)
-			if err != nil {
-				log.WithError(err).Warn("Failed to get peers from tracker")
-			} else {
-				allPeers = append(allPeers, peers...)
-			}
-			time.Sleep(1 * time.Second) // Throttle requests
-		}
-	}
-
-	if len(allPeers) == 0 {
-		return nil, fmt.Errorf("No peers found")
-	}
-	return allPeers, nil
-}
-
-// retryConnect attempts to connect to a peer with retry logic.
-// maxRetries: Maximum number of retry attempts.
-// initialDelay: Initial delay before the first retry.
-func retryConnect(ctx context.Context, peerHash []byte, index int, mi *metainfo.MetaInfo, dm *download.DownloadManager, pm *peer.PeerManager, maxRetries int, initialDelay time.Duration) {
-	delay := initialDelay
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		select {
-		case <-ctx.Done():
-			log.Infof("Context cancelled, stopping retries for peer %d", index)
-			return
-		default:
-		}
-
-		err := peer.ConnectToPeer(ctx, peerHash, index, mi, dm, pm)
-		if err == nil {
-			log.Infof("Successfully connected to peer %d on attempt %d", index, attempt)
-			return
-		}
-
-		log.Errorf("Attempt %d to connect to peer %d failed: %v", attempt, index, err)
-
-		if attempt < maxRetries {
-			log.Infof("Retrying to connect to peer %d after %v...", index, delay)
-			select {
-			case <-ctx.Done():
-				log.Infof("Context cancelled during delay, stopping retries for peer %d", index)
-				return
-			case <-time.After(delay):
-				// Exponential backoff: double the delay for the next attempt
-				delay *= 2
-				if delay > 60*time.Second {
-					delay = 60 * time.Second // Cap the delay to 60 seconds
-				}
-			}
-		}
-	}
-
-	log.Errorf("Exceeded maximum retries (%d) for peer %d", maxRetries, index)
-}
-
-func startPeerListener(mi *metainfo.MetaInfo, downloadDir string) error {
-	listenerSession := i2p.GlobalStreamSession
-
-	listener, err := listenerSession.Listen()
-	if err != nil {
-		return fmt.Errorf("Failed to start listening: %v", err)
-	}
-	defer listener.Close()
-
-	log.Info("Started seeding listener on address: ", listenerSession.Addr().Base32())
-
-	// Initialize the file writer for the seeder
-	var outputPath string
-	var mode os.FileMode
-	info, err := mi.Info()
-	if err != nil {
-		return fmt.Errorf("Failed to get torrent info: %v", err)
-	}
-
-	if len(info.Files) == 0 {
-		// Single-file torrent
-		outputPath = filepath.Join(downloadDir, info.Name)
-		mode = 0644
-	} else {
-		// Multi-file torrent
-		outputPath = filepath.Join(downloadDir, info.Name)
-		mode = 0755
-		// Create the directory if it doesn't exist
-		err := os.MkdirAll(outputPath, mode)
-		if err != nil && !os.IsExist(err) {
-			return fmt.Errorf("Failed to create output directory: %v", err)
-		}
-	}
-
-	writer := metainfo.NewWriter(outputPath, info, mode)
-
-	// Initialize the UploadManager for the seeder
-	um := upload.NewUploadManager(writer, info, downloadDir)
-
-	// Initialize the PeerManager for uploading
-	pm := peer.NewPeerManager(nil) // Pass nil since we're not downloading
-
-	// Start accepting incoming connections
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.WithError(err).Error("Error accepting connection")
-			continue
-		}
-
-		go func(conn net.Conn) {
-			defer conn.Close()
-
-			// Set appropriate timeouts
-			conn.SetDeadline(time.Now().Add(30 * time.Second))
-
-			// Generate peer ID for this connection
-			peerId := util.GeneratePeerIdMeta()
-
-			// Perform handshake
-			err := peer.PerformHandshake(conn, mi.InfoHash().Bytes(), string(peerId[:]))
-			if err != nil {
-				log.WithError(err).Error("Failed handshake with seeding peer")
-				return
-			}
-
-			// Create peer connection
-			pc := pp.NewPeerConn(conn, peerId, mi.InfoHash())
-			pc.Timeout = 30 * time.Second
-
-			// Add peer to UploadManager
-			um.AddPeer(pc)
-			defer um.RemovePeer(pc)
-
-			// Handle the peer connection in seeding mode
-			err = handleSeedingPeer(pc, um, pm)
-			if err != nil {
-				log.WithError(err).Error("Error handling seeding peer")
-			}
-		}(conn)
-	}
-}
-
-// handleSeedingPeer manages an incoming seeding peer connection.
-// It handles requests for pieces, manages upload interactions, and ensures robust error handling.
-func handleSeedingPeer(pc *pp.PeerConn, um *upload.UploadManager, pm *peer.PeerManager) error {
-	log := log.WithField("peer", pc.RemoteAddr().String())
-	log.Info("Handling new seeding connection")
-
-	// Add peer to PeerManager
-	pm.Mu.Lock()
-	if pm.Peers == nil {
-		pm.Peers = make(map[*pp.PeerConn]*peer.PeerState)
-	}
-	pm.Peers[pc] = peer.NewPeerState()
-	pm.Mu.Unlock()
-
-	defer func() {
-		pm.Mu.Lock()
-		delete(pm.Peers, pc)
-		pm.Mu.Unlock()
-	}()
-
-	// Send bitfield to the peer
-	err := pc.SendBitfield(um.Bitfield)
-	if err != nil {
-		log.WithError(err).Error("Failed to send bitfield to peer")
-		return fmt.Errorf("failed to send bitfield: %v", err)
-	}
-
-	// Unchoke the peer to allow requests
-	err = pc.SendUnchoke()
-	if err != nil {
-		log.WithError(err).Error("Failed to send unchoke to peer")
-		return fmt.Errorf("failed to send unchoke: %v", err)
-	}
-
-	// Main message handling loop
-	for {
-		msg, err := pc.ReadMsg()
-		if err != nil {
-			if err.Error() == "EOF" {
-				log.Info("Peer closed the connection")
-			} else {
-				log.WithError(err).Error("Failed to read message from peer")
-			}
-			return fmt.Errorf("failed to read message: %v", err)
-		}
-
-		switch msg.Type {
-		case pp.MTypeRequest:
-			// Handle piece requests from the peer
-			blockData, err := um.GetBlock(msg.Index, msg.Begin, msg.Length)
-			if err != nil {
-				log.WithError(err).Error("Failed to retrieve requested block")
-				continue
-			}
-
-			// Send the piece to the peer
-			err = pc.SendPiece(msg.Index, msg.Begin, blockData)
-			if err != nil {
-				log.WithError(err).Error("Failed to send piece to peer")
-				continue
-			}
-
-			// Update upload stats
-			uploadSize := int64(len(blockData))
-			um.Mu.Lock()
-			um.Uploaded += uploadSize
-			um.Mu.Unlock()
-			pm.UpdatePeerStats(pc, 0, uploadSize)
-
-			log.WithFields(logrus.Fields{
-				"index": msg.Index,
-				"begin": msg.Begin,
-				"size":  len(blockData),
-			}).Debug("Successfully sent piece to peer")
-
-		case pp.MTypeInterested:
-			// Handle interested messages
-			pm.OnPeerInterested(pc)
-			log.Debug("Peer is interested in downloading")
-
-		case pp.MTypeNotInterested:
-			// Handle not interested messages
-			pm.OnPeerNotInterested(pc)
-			log.Debug("Peer is not interested in downloading")
-
-		case pp.MTypeHave:
-			// Update peer's bitfield
-			if int(msg.Index) < len(pc.BitField) {
-				pc.BitField.Set(msg.Index)
-				log.WithField("piece_index", msg.Index).Debug("Updated peer's bitfield with new piece")
-			} else {
-				log.WithField("piece_index", msg.Index).Warn("Received 'Have' for invalid piece index")
-			}
-
-		case pp.MTypeBitField:
-			// Update peer's bitfield
-			pc.BitField = msg.BitField
-			log.WithField("pieces", pc.BitField.String()).Debug("Received peer's bitfield")
-
-		case pp.MTypeCancel:
-			// Handle cancel requests if needed
-			log.Debug("Received 'Cancel' message from peer (ignored in seeding)")
-
-		default:
-			// Log unhandled message types
-			log.WithField("message_type", msg.Type.String()).Debug("Received unhandled message type from peer")
-		}
-	}
 }

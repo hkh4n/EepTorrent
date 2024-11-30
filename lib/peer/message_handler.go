@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import (
 	"eeptorrent/lib/download"
+	"eeptorrent/lib/upload"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/bencode"
 	"github.com/go-i2p/go-i2p-bt/downloader"
@@ -368,4 +369,114 @@ func requestNextBlock(pc *pp.PeerConn, dm *download.DownloadManager, ps *PeerSta
 	}
 
 	return firstErr
+}
+
+// handleSeedingPeer manages an incoming seeding peer connection.
+// It handles requests for pieces, manages upload interactions, and ensures robust error handling.
+func HandleSeedingPeer(pc *pp.PeerConn, um *upload.UploadManager, pm *PeerManager) error {
+	log := log.WithField("peer", pc.RemoteAddr().String())
+	log.Info("Handling new seeding connection")
+
+	// Add peer to PeerManager
+	pm.Mu.Lock()
+	if pm.Peers == nil {
+		pm.Peers = make(map[*pp.PeerConn]*PeerState)
+	}
+	pm.Peers[pc] = NewPeerState()
+	pm.Mu.Unlock()
+
+	defer func() {
+		pm.Mu.Lock()
+		delete(pm.Peers, pc)
+		pm.Mu.Unlock()
+	}()
+
+	// Send bitfield to the peer
+	err := pc.SendBitfield(um.Bitfield)
+	if err != nil {
+		log.WithError(err).Error("Failed to send bitfield to peer")
+		return fmt.Errorf("failed to send bitfield: %v", err)
+	}
+
+	// Unchoke the peer to allow requests
+	err = pc.SendUnchoke()
+	if err != nil {
+		log.WithError(err).Error("Failed to send unchoke to peer")
+		return fmt.Errorf("failed to send unchoke: %v", err)
+	}
+
+	// Main message handling loop
+	for {
+		msg, err := pc.ReadMsg()
+		if err != nil {
+			if err.Error() == "EOF" {
+				log.Info("Peer closed the connection")
+			} else {
+				log.WithError(err).Error("Failed to read message from peer")
+			}
+			return fmt.Errorf("failed to read message: %v", err)
+		}
+
+		switch msg.Type {
+		case pp.MTypeRequest:
+			// Handle piece requests from the peer
+			blockData, err := um.GetBlock(msg.Index, msg.Begin, msg.Length)
+			if err != nil {
+				log.WithError(err).Error("Failed to retrieve requested block")
+				continue
+			}
+
+			// Send the piece to the peer
+			err = pc.SendPiece(msg.Index, msg.Begin, blockData)
+			if err != nil {
+				log.WithError(err).Error("Failed to send piece to peer")
+				continue
+			}
+
+			// Update upload stats
+			uploadSize := int64(len(blockData))
+			um.Mu.Lock()
+			um.Uploaded += uploadSize
+			um.Mu.Unlock()
+			pm.UpdatePeerStats(pc, 0, uploadSize)
+
+			log.WithFields(logrus.Fields{
+				"index": msg.Index,
+				"begin": msg.Begin,
+				"size":  len(blockData),
+			}).Debug("Successfully sent piece to peer")
+
+		case pp.MTypeInterested:
+			// Handle interested messages
+			pm.OnPeerInterested(pc)
+			log.Debug("Peer is interested in downloading")
+
+		case pp.MTypeNotInterested:
+			// Handle not interested messages
+			pm.OnPeerNotInterested(pc)
+			log.Debug("Peer is not interested in downloading")
+
+		case pp.MTypeHave:
+			// Update peer's bitfield
+			if int(msg.Index) < len(pc.BitField) {
+				pc.BitField.Set(msg.Index)
+				log.WithField("piece_index", msg.Index).Debug("Updated peer's bitfield with new piece")
+			} else {
+				log.WithField("piece_index", msg.Index).Warn("Received 'Have' for invalid piece index")
+			}
+
+		case pp.MTypeBitField:
+			// Update peer's bitfield
+			pc.BitField = msg.BitField
+			log.WithField("pieces", pc.BitField.String()).Debug("Received peer's bitfield")
+
+		case pp.MTypeCancel:
+			// Handle cancel requests if needed
+			log.Debug("Received 'Cancel' message from peer (ignored in seeding)")
+
+		default:
+			// Log unhandled message types
+			log.WithField("message_type", msg.Type.String()).Debug("Received unhandled message type from peer")
+		}
+	}
 }
