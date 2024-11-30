@@ -197,8 +197,8 @@ func getPeersFromTracker(ctx context.Context, tc TrackerConfig, mi *metainfo.Met
 	}
 }
 
-func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFromEepTorrentTracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from EepTorrent tracker")
 	config := TrackerConfig{
@@ -210,8 +210,8 @@ func GetPeersFromEepTorrentTracker(mi *metainfo.MetaInfo, timeout time.Duration)
 	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromPostmanTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFromPostmanTracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from postman tracker")
 	config := TrackerConfig{
@@ -222,8 +222,8 @@ func GetPeersFromPostmanTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([
 	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromSimpTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFromSimpTracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from Simp tracker")
 	config := TrackerConfig{
@@ -234,8 +234,8 @@ func GetPeersFromSimpTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]
 	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFromDg2Tracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from Dg2 tracker")
 	config := TrackerConfig{
@@ -246,8 +246,8 @@ func GetPeersFromDg2Tracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]b
 	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromSkankTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFromSkankTracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from Skank tracker")
 	config := TrackerConfig{
@@ -258,8 +258,8 @@ func GetPeersFromSkankTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][
 	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFromOmitTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFromOmitTracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from Omit tracker")
 	config := TrackerConfig{
@@ -270,8 +270,8 @@ func GetPeersFromOmitTracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]
 	return getPeersFromTracker(ctx, config, mi)
 }
 
-func GetPeersFrom6kw6Tracker(mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func GetPeersFrom6kw6Tracker(ctx context.Context, mi *metainfo.MetaInfo, timeout time.Duration) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Info("Getting peers from 6kw6 tracker")
 	config := TrackerConfig{
