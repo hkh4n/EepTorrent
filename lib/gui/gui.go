@@ -37,8 +37,6 @@ var (
 	logFile            *os.File
 	logFileMux         sync.Mutex
 	logBuffer          bytes.Buffer
-	downloadDir        string
-	maxConnections     int
 	torrentListBinding binding.UntypedList
 	addButton          *widget.Button
 	myWindow           fyne.Window
