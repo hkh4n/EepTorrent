@@ -122,6 +122,15 @@ func (mw *MockWriter) ReadAt(p []byte, offset int64) (n int, err error) {
 	return copyLen, nil
 }
 
+type MockConn struct {
+	net.Conn
+	addr net.Addr
+}
+
+func (m *MockConn) RemoteAddr() net.Addr {
+	return m.addr
+}
+
 // TotalWrittenBlocks returns the total number of written blocks.
 func (mw *MockWriter) TotalWrittenBlocks() int {
 	mw.mu.Lock()
@@ -346,15 +355,6 @@ func TestConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 	// No race conditions should occur
-}
-
-type MockConn struct {
-	net.Conn
-	addr net.Addr
-}
-
-func (m *MockConn) RemoteAddr() net.Addr {
-	return m.addr
 }
 
 func TestPeerInteractions(t *testing.T) {
