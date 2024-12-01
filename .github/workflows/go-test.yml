@@ -43,6 +43,9 @@ jobs:
             libglfw3-dev \
             xorg-dev
 
+      - name: Install gomock dependencies
+        run: go install go.uber.org/mock/mockgen@latest
+
       - name: Install dependencies
         run: go mod download
 
