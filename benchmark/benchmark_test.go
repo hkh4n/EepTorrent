@@ -107,13 +107,16 @@ func TestBench1KB(t *testing.T) {
 
 	var allPeers [][]byte
 	//peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
-	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi, timeout)
+	// Create context with proper timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	peersEep, err := tracker.GetPeersFromEepTorrentTracker(ctx, &mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
 	} else {
 		allPeers = append(allPeers, peersEep...)
 	}
-	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi, timeout)
+	peersDg2, err := tracker.GetPeersFromDg2Tracker(ctx, &mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
 	} else {
@@ -122,7 +125,7 @@ func TestBench1KB(t *testing.T) {
 	uniquePeers := peer.RemoveDuplicatePeers(allPeers)
 
 	// Create context with proper timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -343,24 +346,22 @@ func TestBench1MB(t *testing.T) {
 	timeout := time.Second * 15
 
 	var allPeers [][]byte
-	//peers, err := tracker.GetPeersFromEepTorrentTracker(&mi)
-	peersEep, err := tracker.GetPeersFromEepTorrentTracker(&mi, timeout)
+	// Create context with proper timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	peersEep, err := tracker.GetPeersFromEepTorrentTracker(ctx, &mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from EepTorrent Tracker")
 	} else {
 		allPeers = append(allPeers, peersEep...)
 	}
-	peersDg2, err := tracker.GetPeersFromDg2Tracker(&mi, timeout)
+	peersDg2, err := tracker.GetPeersFromDg2Tracker(ctx, &mi, timeout)
 	if err != nil {
 		log.WithError(err).Warn("Failed to get peers from Dg2 Tracker")
 	} else {
 		allPeers = append(allPeers, peersDg2...)
 	}
 	uniquePeers := peer.RemoveDuplicatePeers(allPeers)
-
-	// Create context with proper timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-	defer cancel()
 
 	var wg sync.WaitGroup
 	downloadComplete := make(chan struct{})

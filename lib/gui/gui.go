@@ -304,31 +304,7 @@ func RunApp() {
 // createToolbar creates the toolbar with Add and Remove buttons
 func createToolbar(downloadDirEntry *widget.Entry, maxConnectionsEntry *widget.Entry) *fyne.Container {
 	addButton = widget.NewButton("Add Torrent", func() {
-		// Open file dialog to select torrent file
-		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err != nil || reader == nil {
-				return
-			}
-
-			torrentFilePath := reader.URI().Path()
-			reader.Close()
-
-			// Validate and apply settings
-			downloadDir := downloadDirEntry.Text
-			if downloadDir == "" {
-				ShowError("Invalid Settings", fmt.Errorf("Please select a download directory"), myWindow)
-				return
-			}
-
-			maxConnections, err := strconv.Atoi(maxConnectionsEntry.Text)
-			if err != nil || maxConnections <= 0 {
-				ShowError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), myWindow)
-				return
-			}
-
-			// Start the torrent download
-			addTorrent(torrentFilePath, downloadDir, maxConnections)
-		}, myWindow)
+		showAddTorrentOptionsDialog(myWindow, downloadDirEntry, maxConnectionsEntry)
 	})
 
 	removeButton = widget.NewButton("Remove Torrent", func() {
@@ -451,6 +427,77 @@ func createTorrentListView() *widget.List {
 		}
 	}
 	return torrentListView
+}
+
+// showAddTorrentOptionsDialog displays a popup with options to add a torrent
+func showAddTorrentOptionsDialog(parent fyne.Window, downloadDirEntry *widget.Entry, maxConnectionsEntry *widget.Entry) {
+	// Declare the dialog variable
+	var optionsDialog *dialog.CustomDialog
+
+	// Create buttons for each option
+	addFromFileButton := widget.NewButton("Add from File", func() {
+		if optionsDialog != nil {
+			optionsDialog.Hide() // Properly hide the dialog
+		}
+		// Trigger the existing Add from File functionality
+		showAddFromFileDialog(parent, downloadDirEntry, maxConnectionsEntry)
+	})
+
+	addMagnetLinkButton := widget.NewButton("Add Magnet Link", func() {
+		if optionsDialog != nil {
+			optionsDialog.Hide() // Properly hide the dialog
+		}
+		// Show a stub dialog indicating the feature is not implemented
+		dialog.ShowInformation("Not Implemented", "Adding torrents via Magnet Link is not yet implemented.", parent)
+	})
+
+	addHTTPSLinkButton := widget.NewButton("Add HTTPS Link", func() {
+		if optionsDialog != nil {
+			optionsDialog.Hide() // Properly hide the dialog
+		}
+		// Show a stub dialog indicating the feature is not implemented
+		dialog.ShowInformation("Not Implemented", "Adding torrents via HTTPS Link is not yet implemented.", parent)
+	})
+
+	// Create a container for the buttons
+	optionsContainer := container.NewVBox(
+		addFromFileButton,
+		addMagnetLinkButton,
+		addHTTPSLinkButton,
+	)
+
+	// Create and show the custom dialog
+	optionsDialog = dialog.NewCustom("Add Torrent", "Close", optionsContainer, parent)
+	optionsDialog.Resize(fyne.NewSize(300, 150))
+	optionsDialog.Show()
+}
+
+// showAddFromFileDialog opens the file dialog to select a torrent file
+func showAddFromFileDialog(parent fyne.Window, downloadDirEntry *widget.Entry, maxConnectionsEntry *widget.Entry) {
+	dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+		if err != nil || reader == nil {
+			return
+		}
+
+		torrentFilePath := reader.URI().Path()
+		reader.Close()
+
+		// Validate and apply settings
+		downloadDir := downloadDirEntry.Text
+		if downloadDir == "" {
+			ShowError("Invalid Settings", fmt.Errorf("Please select a download directory"), parent)
+			return
+		}
+
+		maxConnections, err := strconv.Atoi(maxConnectionsEntry.Text)
+		if err != nil || maxConnections <= 0 {
+			ShowError("Invalid Settings", fmt.Errorf("Max Connections must be a positive integer"), parent)
+			return
+		}
+
+		// Start the torrent download
+		addTorrent(torrentFilePath, downloadDir, maxConnections)
+	}, parent)
 }
 
 // updateLogsContent periodically updates the logs content label
