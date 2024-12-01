@@ -10,10 +10,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // MockWriter implements metainfo.Writer interface for testing
@@ -429,4 +433,227 @@ func TestIsFinished(t *testing.T) {
 
 	// Should now be finished
 	assert.True(t, dm.IsFinished())
+}
+
+func TestReadPiece(t *testing.T) {
+	dm, _, tempDir := setupTestDownloadManager(t)
+	defer os.RemoveAll(tempDir)
+
+	pieceIndex := uint32(0)
+	pieceLength := dm.Writer.Info().PieceLength
+
+	// Prepare piece data and write to disk
+	pieceData := make([]byte, pieceLength)
+	for i := range pieceData {
+		pieceData[i] = byte(i % 256)
+	}
+
+	filePath := filepath.Join(tempDir, dm.Writer.Info().Name)
+	err := ioutil.WriteFile(filePath, pieceData, 0644)
+	assert.NoError(t, err)
+
+	// Read the piece
+	readData, err := dm.ReadPiece(pieceIndex)
+	assert.NoError(t, err)
+	assert.Equal(t, pieceData, readData, "Read data should match written data")
+}
+
+func TestReadPiece_InvalidIndex(t *testing.T) {
+	dm, _, tempDir := setupTestDownloadManager(t)
+	defer os.RemoveAll(tempDir)
+
+	invalidIndex := uint32(dm.TotalPieces) // Out of bounds
+	_, err := dm.ReadPiece(invalidIndex)
+	assert.Error(t, err, "Should return error for invalid piece index")
+}
+
+func TestReserveBlock(t *testing.T) {
+	// Setup
+	writer := NewMockWriter(metainfo.Info{})
+	dm := NewDownloadManager(writer, 1024*1024, 256*1024, 4, "/tmp/download")
+	pieceIndex := uint32(0)
+	offset := uint32(0)
+
+	// Ensure the block is initially not reserved by reserving it
+	reserved := dm.reserveBlock(pieceIndex, offset)
+	assert.True(t, reserved, "Block should be successfully reserved initially")
+
+	// Attempt to reserve the same block again
+	reservedAgain := dm.reserveBlock(pieceIndex, offset)
+	assert.False(t, reservedAgain, "Block should already be reserved")
+}
+
+func TestReserveBlockConcurrency(t *testing.T) {
+	info := metainfo.Info{
+		PieceLength: 256 * 1024, // 256 KB
+		Pieces:      make(metainfo.Hashes, 4),
+	}
+
+	writer := NewMockWriter(info)
+	dm := NewDownloadManager(writer, 1024*1024, 256*1024, 4, "/tmp/download") // 1 MB total length
+	pieceIndex := uint32(1)
+	offset := uint32(0) // Corrected offset within the piece
+
+	var successCount int32
+	var wg sync.WaitGroup
+	numGoroutines := 10
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if dm.reserveBlock(pieceIndex, offset) {
+				// Only one goroutine should succeed
+				atomic.AddInt32(&successCount, 1)
+			}
+		}()
+	}
+
+	wg.Wait()
+	assert.Equal(t, int32(1), successCount, "Only one goroutine should successfully reserve the block")
+
+	piece := dm.Pieces[pieceIndex]
+	piece.Mu.Lock()
+	defer piece.Mu.Unlock()
+	assert.True(t, piece.Blocks[offset/downloader.BlockSize], "Block should be reserved")
+}
+
+func TestDownloadManagerShutdown(t *testing.T) {
+	dm, _, tempDir := setupTestDownloadManager(t)
+	defer os.RemoveAll(tempDir)
+
+	// Start a dummy goroutine to simulate ongoing work
+	dm.wg.Add(1)
+	go func() {
+		defer dm.wg.Done()
+		select {
+		case <-dm.ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			return
+		}
+	}()
+
+	// Shutdown should cancel the context and wait for the goroutine
+	start := time.Now()
+	dm.Shutdown()
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 1*time.Second, "Shutdown should return promptly")
+}
+
+func TestTrackUpload(t *testing.T) {
+	dm, _, tempDir := setupTestDownloadManager(t)
+	defer os.RemoveAll(tempDir)
+
+	initialUploaded := atomic.LoadInt64(&dm.Uploaded)
+	initialSessionUploaded := atomic.LoadInt64(&dm.UploadedThisSession)
+	initialLastUpload := dm.LastUploadTime
+
+	time.Sleep(10 * time.Millisecond) // Ensure timestamp difference
+
+	dm.TrackUpload(1024)
+
+	assert.Equal(t, initialUploaded+1024, atomic.LoadInt64(&dm.Uploaded), "Uploaded bytes should be incremented by 1024")
+	assert.Equal(t, initialSessionUploaded+1024, atomic.LoadInt64(&dm.UploadedThisSession), "UploadedThisSession should be incremented by 1024")
+	assert.True(t, dm.LastUploadTime.After(initialLastUpload), "LastUploadTime should be updated")
+}
+
+func TestVerifyPiece(t *testing.T) {
+	t.Log("Starting TestVerifyPiece")
+	pieceLength := int64(256 * 1024)  // 256KB
+	totalLength := int64(1024 * 1024) // 1MB
+	numPieces := 4
+
+	// Generate piece hashes
+	pieceHashes := make(metainfo.Hashes, numPieces)
+	for i := 0; i < numPieces; i++ {
+		data := make([]byte, pieceLength)
+		for j := range data {
+			data[j] = byte(j % 256)
+		}
+		hash := sha1.Sum(data)
+		pieceHashes[i] = metainfo.NewHash(hash[:])
+	}
+
+	info := metainfo.Info{
+		PieceLength: pieceLength,
+		Length:      totalLength,
+		Name:        "test_file",
+		Pieces:      pieceHashes,
+	}
+
+	writer := NewMockWriter(info)
+	dm := NewDownloadManager(writer, totalLength, pieceLength, numPieces, "/tmp/download")
+
+	// Simulate receiving all blocks for piece 0
+	pieceIndex := uint32(0)
+	for j := 0; j < int(pieceLength)/int(downloader.BlockSize); j++ {
+		offset := uint32(j) * downloader.BlockSize
+		block := make([]byte, downloader.BlockSize)
+		for k := range block {
+			block[k] = byte(k % 256)
+		}
+		t.Logf("Calling OnBlock for piece %d, offset %d", pieceIndex, offset)
+		err := dm.OnBlock(pieceIndex, offset, block)
+		assert.NoError(t, err, "OnBlock should not return error for valid block")
+	}
+	t.Log("All blocks received, verifying piece")
+
+	// Verify the piece
+	valid, err := dm.VerifyPiece(pieceIndex)
+	assert.NoError(t, err, "VerifyPiece should not return error for valid piece")
+	assert.True(t, valid, "Piece verification should succeed for correct data")
+
+	// Introduce corruption in one block by directly modifying BlockData
+	corruptBlockNum := 0 // Corrupt the first block
+	dm.Pieces[pieceIndex].Mu.Lock()
+	dm.Pieces[pieceIndex].BlockData[corruptBlockNum] = []byte("corrupted data")
+	dm.Pieces[pieceIndex].Mu.Unlock()
+
+	// Verify the piece again
+	valid, err = dm.VerifyPiece(pieceIndex)
+	assert.Error(t, err, "VerifyPiece should return error due to corrupted block")
+	assert.False(t, valid, "Piece verification should fail due to corrupted block")
+}
+
+func TestWritePieceToDisk(t *testing.T) {
+	dm, mockWriter, tempDir := setupTestDownloadManager(t)
+	defer os.RemoveAll(tempDir)
+
+	pieceIndex := uint32(0)
+	pieceLength := dm.Writer.Info().PieceLength
+
+	// Simulate receiving all blocks for the piece
+	blockSize := downloader.BlockSize
+	numBlocks := int(pieceLength) / blockSize
+	for i := 0; i < numBlocks; i++ {
+		offset := uint32(i * blockSize)
+		blockData := make([]byte, blockSize)
+		for j := range blockData {
+			blockData[j] = byte(j % 256) // Match the pattern used in setupTestDownloadManager
+		}
+		err := dm.OnBlock(pieceIndex, offset, blockData)
+		assert.NoError(t, err)
+	}
+
+	// Expect VerifyPiece to be called and return true
+	mockWriter.On("WriteAt", mock.Anything, mock.Anything).Return(len(dm.Pieces[pieceIndex].BlockData[0]), nil)
+	valid, err := dm.VerifyPiece(pieceIndex)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+
+	// Write piece to disk
+	err = dm.WritePieceToDisk(pieceIndex)
+	assert.NoError(t, err)
+
+	// Verify file content
+	filePath := filepath.Join(tempDir, dm.Writer.Info().Name)
+	data, err := ioutil.ReadFile(filePath)
+	assert.NoError(t, err)
+	expectedData := make([]byte, pieceLength)
+	for i := 0; i < int(pieceLength); i++ {
+		expectedData[i] = byte(i % 256) // Ensure this matches the written block data
+	}
+	assert.Equal(t, expectedData, data[:len(expectedData)], "File data should match written blocks")
 }
