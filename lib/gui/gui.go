@@ -389,7 +389,7 @@ func createListHeaders() *fyne.Container {
 
 // createTorrentListView creates the torrent list view
 func createTorrentListView() *widget.List {
-	torrentListView := widget.NewListWithData(
+	torrentListView = widget.NewListWithData(
 		torrentListBinding,
 		func() fyne.CanvasObject {
 			nameLabel := widget.NewLabel("")
