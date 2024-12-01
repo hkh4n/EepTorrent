@@ -11,6 +11,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.10.0
 	github.com/wcharczuk/go-chart v2.0.1+incompatible
+	go.uber.org/mock v0.5.0
 )
 
 //replace github.com/go-i2p/go-i2p-bt => github.com/hkh4n/go-i2p-bt v0.0.0-20241125131623-1f605524678e
