@@ -107,6 +107,9 @@ func RunApp() {
 		}
 	}()
 	myApp = app.NewWithID("com.i2p.EepTorrent")
+
+	myApp.Settings().SetTheme(&CustomTheme{})
+
 	myApp.SetIcon(logo.ResourceLogo32Png)
 
 	myWindow = myApp.NewWindow("EepTorrent")
