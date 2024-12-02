@@ -224,3 +224,56 @@ func showAddTrackerDialog(parent fyne.Window) {
 	addTrackerDialog.Resize(fyne.NewSize(400, 300))
 	addTrackerDialog.Show()
 }
+
+// showSelectTrackersDialog presents a dialog for selecting trackers to announce to.
+func showSelectTrackersDialog(parent fyne.Window, onConfirm func(selected []tracker.TrackerConfig)) {
+	availableTrackers := tracker.GlobalTrackerManager.GetTrackers()
+	if len(availableTrackers) == 0 {
+		dialog.ShowInformation("No Trackers Available", "Please add trackers in the Trackers tab before adding a torrent.", parent)
+		return
+	}
+
+	var checkboxes []*widget.Check
+	trackerCheckboxMap := make(map[*widget.Check]tracker.TrackerConfig)
+
+	for _, tc := range availableTrackers {
+		cb := widget.NewCheck(tc.Name, nil)
+		checkboxes = append(checkboxes, cb)
+		trackerCheckboxMap[cb] = tc
+	}
+
+	var canvasObjects []fyne.CanvasObject
+	for _, cb := range checkboxes {
+		canvasObjects = append(canvasObjects, cb)
+	}
+
+	checkboxesContainer := container.NewVBox(canvasObjects...)
+
+	confirmButton := widget.NewButton("Confirm", func() {
+		selected := []tracker.TrackerConfig{}
+		for _, cb := range checkboxes {
+			if cb.Checked {
+				selected = append(selected, trackerCheckboxMap[cb])
+			}
+		}
+		if len(selected) == 0 {
+			dialog.ShowInformation("No Trackers Selected", "Please select at least one tracker or cancel the operation.", parent)
+			return
+		}
+		onConfirm(selected)
+	})
+
+	cancelButton := widget.NewButton("Cancel", func() {
+
+	})
+
+	selectTrackersDialog := dialog.NewCustom("Select Trackers", "Cancel",
+		container.NewVBox(
+			widget.NewLabel("Select Trackers to Announce To:"),
+			checkboxesContainer,
+			container.NewHBox(confirmButton, cancelButton),
+		), parent)
+
+	selectTrackersDialog.Resize(fyne.NewSize(400, 300))
+	selectTrackersDialog.Show()
+}

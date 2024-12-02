@@ -337,8 +337,11 @@ func showAddFromFileDialog(parent fyne.Window, downloadDirEntry *widget.Entry, m
 			return
 		}
 
-		// Start the torrent download
-		addTorrent(torrentFilePath, downloadDir, maxConnections)
+		// Show the tracker selection dialog
+		showSelectTrackersDialog(parent, func(selectedTrackers []tracker.TrackerConfig) {
+			// Start the torrent download with selected trackers
+			addTorrent(torrentFilePath, downloadDir, maxConnections, selectedTrackers)
+		})
 	}, parent)
 }
 

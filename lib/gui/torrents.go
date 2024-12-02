@@ -160,7 +160,7 @@ func torrentListToAnySlice(torrents []*TorrentItem) []any {
 }
 
 // addTorrent starts the download of a torrent and adds it to the torrent list
-func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) {
+func addTorrent(torrentFilePath string, downloadDir string, maxConnections int, selectedTrackers []tracker.TrackerConfig) {
 	// Load the torrent file
 	mi, err := metainfo.LoadFromFile(torrentFilePath)
 	if err != nil {
@@ -178,9 +178,13 @@ func addTorrent(torrentFilePath string, downloadDir string, maxConnections int) 
 		return
 	}
 
-	totalPieces := info.CountPieces()
-	log.Warnf("Torrent Info: Name=%s, Total Length=%d bytes, Piece Length=%d bytes, Total Pieces=%d",
-		info.Name, info.TotalLength(), info.PieceLength, totalPieces)
+	if len(selectedTrackers) > 0 {
+		mi.AnnounceList = [][]string{}
+		for _, tc := range selectedTrackers {
+			announceURL := fmt.Sprintf("http://%s/%s", tc.TrackerAddr, tc.Path)
+			mi.AnnounceList = append(mi.AnnounceList, []string{announceURL})
+		}
+	}
 
 	// Initialize the file writer
 	var outputPath string
