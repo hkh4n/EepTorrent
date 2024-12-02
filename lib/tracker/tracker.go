@@ -23,6 +23,7 @@ import (
 	"context"
 	"eeptorrent/lib/i2p"
 	"eeptorrent/lib/util"
+	"errors"
 	"fmt"
 	"github.com/go-i2p/go-i2p-bt/bencode"
 	"github.com/go-i2p/go-i2p-bt/metainfo"
@@ -32,9 +33,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
+var GlobalTrackerManager *TrackerManager
 var log = logrus.StandardLogger()
 
 const USER_AGENT = "EepTorrent/0.0.0"
@@ -43,6 +46,114 @@ type TrackerConfig struct {
 	Name        string // Human-readable name for logging
 	TrackerAddr string // I2P address of the tracker
 	Path        string // Announce path, e.g., "/a" or "/announce.php"
+}
+
+func init() {
+	GlobalTrackerManager = NewTrackerManager()
+}
+
+// TrackerManager manages a dynamic list of trackers.
+type TrackerManager struct {
+	mu        sync.RWMutex
+	trackers  []TrackerConfig
+	fetchFunc func(context.Context, *metainfo.MetaInfo, TrackerConfig) ([][]byte, error)
+}
+
+// NewTrackerManager initializes the TrackerManager with built-in trackers.
+func NewTrackerManager() *TrackerManager {
+	builtInTrackers := []TrackerConfig{
+		{
+			Name:        "EepTorrent",
+			TrackerAddr: "bjnkpy2rpwwlyjgmxeolt2cnp7h4oe437mtd54hb3pve3gmjqp5a.b32.i2p",
+			Path:        "a",
+		},
+		{
+			Name:        "Postman",
+			TrackerAddr: "tracker2.postman.i2p",
+			Path:        "announce.php",
+		},
+		{
+			Name:        "Dg2",
+			TrackerAddr: "opentracker.dg2.i2p",
+			Path:        "announce.php",
+		},
+		{
+			Name:        "Simp",
+			TrackerAddr: "wc4sciqgkceddn6twerzkfod6p2npm733p7z3zwsjfzhc4yulita.b32.i2p",
+			Path:        "a",
+		},
+		{
+			Name:        "Skank",
+			TrackerAddr: "opentracker.skank.i2p",
+			Path:        "a",
+		},
+	}
+
+	return &TrackerManager{
+		trackers: builtInTrackers,
+		fetchFunc: func(ctx context.Context, mi *metainfo.MetaInfo, tc TrackerConfig) ([][]byte, error) {
+			return getPeersFromTracker(ctx, tc, mi)
+		},
+	}
+}
+
+// GetAllPeers retrieves peers from all registered trackers.
+func (tm *TrackerManager) GetAllPeers(ctx context.Context, mi *metainfo.MetaInfo) ([][]byte, error) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	var allPeers [][]byte
+	//timeout := time.Second * 15
+
+	for _, getPeers := range tm.trackers {
+		select {
+		case <-ctx.Done():
+			log.Infof("Peer fetching canceled for torrent due to context cancellation.")
+			return nil, ctx.Err()
+		default:
+			peers, err := tm.fetchFunc(ctx, mi, getPeers)
+			if err != nil {
+				log.WithError(err).Warnf("Failed to get peers from tracker: %s", getPeers.Name)
+			} else {
+				allPeers = append(allPeers, peers...)
+			}
+			time.Sleep(1 * time.Second) // Throttle requests
+		}
+	}
+
+	if len(allPeers) == 0 {
+		return nil, errors.New("no peers found from any tracker")
+	}
+	return allPeers, nil
+}
+
+// AddTracker adds a new tracker to the list.
+func (tm *TrackerManager) AddTracker(tc TrackerConfig) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.trackers = append(tm.trackers, tc)
+}
+
+// RemoveTracker removes a tracker by its name.
+func (tm *TrackerManager) RemoveTracker(name string) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for i, tc := range tm.trackers {
+		if tc.Name == name {
+			tm.trackers = append(tm.trackers[:i], tm.trackers[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("tracker not found")
+}
+
+// GetTrackers returns a copy of the current tracker list.
+func (tm *TrackerManager) GetTrackers() []TrackerConfig {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	trackersCopy := make([]TrackerConfig, len(tm.trackers))
+	copy(trackersCopy, tm.trackers)
+	return trackersCopy
 }
 
 func getPeersFromTracker(ctx context.Context, tc TrackerConfig, mi *metainfo.MetaInfo) ([][]byte, error) {
